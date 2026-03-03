@@ -54,6 +54,7 @@ Total build time: ~30–60 seconds.
 - **Python 3.9+** — download from https://python.org  
   *(Homebrew also works: `brew install python`)*
 - **PySide6** — if missing, run: `pip3 install pyside6`
+- **Requests** - if missing, runL `pip3 install requests`
 
 ---
 
