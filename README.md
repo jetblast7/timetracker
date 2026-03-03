@@ -1,108 +1,89 @@
-# ⏱ TimeTrack — macOS App
+# TimeTrack — macOS
 
-A dark-themed desktop time tracker with multi-project support, manual entry, and Jira worklog sync.
-
-## Features
-- Multi project Tracking
-- Status bar icon shows when tracking is active or not and which project is active
-- Change project from status bar icon right click
-- create time logs automatically through tracking
-- create time logs manually with comments
-- tracked time can be synced to jira
-- time logs can be edited
-- time logs can be deleted
-- "i" button displays jira ticket information
-- time can be exported in csv or json format
-- time can be exported over selectable and custom time periods
-- main screen displays time over selectable time periods
-- time logs are grouped according to project.
+Multi-project time tracker with Jira worklog sync, manual entry, export, and a menu-bar status icon.
 
 ---
 
-## Build the Mac App — 3 steps
-
-**Step 1 — Open Terminal and go to this folder**
-```bash
-cd /path/to/timetrack_package
-```
-
-**Step 2 — Make the script executable (first time only)**
-```bash
-chmod +x build_mac.sh
-```
-
-**Step 3 — Run the build**
-```bash
-./build_mac.sh
-```
-
-The script will:
-- Check your Python version (3.9+ required)
-- Create an isolated virtual environment
-- Install all dependencies automatically
-- Generate the app icon
-- Build `TimeTrack.app` via PyInstaller
-- Offer to install it to `/Applications` for you
-
-Total build time: ~30–60 seconds.
-
----
-
-## Requirements
-
-- **macOS 10.13 (High Sierra) or later**
-- **Python 3.9+** — download from https://python.org  
-  *(Homebrew also works: `brew install python`)*
-- **PySide6** — if missing, run: `pip3 install pyside6`
-- **Requests** - if missing, runL `pip3 install requests`
-
----
-
-## First launch (Gatekeeper)
-
-Because the app isn't signed with an Apple Developer certificate, macOS may
-show a warning the first time.
-
-**To open it:**
-1. Right-click `TimeTrack.app` in Finder
-2. Choose **Open**
-3. Click **Open** in the dialog
-
-After this, it opens normally like any other app.
-
----
-
-## Run without building (from source)
+## Quick Start (run from source)
 
 ```bash
-pip3 install requests
+pip3 install PySide6 requests
 python3 time_tracker.py
 ```
 
 ---
 
-## Files
+## Building the DMG
 
-| File | Purpose |
-|---|---|
-| `time_tracker.py` | Main application source |
-| `TimeTrack.spec` | PyInstaller build configuration |
-| `create_icon.py` | Generates `TimeTrack.icns` |
-| `requirements.txt` | Python dependencies |
-| `build_mac.sh` | One-command macOS builder |
+### Requirements
+- macOS 11 (Big Sur) or later
+- Python 3.9+  (`python3 --version`)
+- Xcode Command Line Tools  (`xcode-select --install`)
+
+### One command
+
+```bash
+chmod +x build_mac.sh
+./build_mac.sh
+```
+
+The script will:
+
+1. Create a `.venv` and install PySide6, requests, pyinstaller, Pillow
+2. Generate `TimeTrack.icns` from `create_icon.py`
+3. Build `dist/TimeTrack.app` with PyInstaller
+4. Produce `dist/TimeTrack.dmg` — a compressed, drag-to-install disk image
+5. Optionally sign the app if a Developer ID certificate is in your keychain
+
+### Output
+
+```
+dist/
+  TimeTrack.app    <- standalone native app (no Python needed)
+  TimeTrack.dmg    <- distributable installer image
+```
+
+Open the DMG, drag TimeTrack to Applications, then launch from Spotlight or the Dock.
 
 ---
 
-## Jira Setup
+## First launch (unsigned builds)
 
-1. Click **⚙ Jira Settings** in the app header
-2. Enter your Jira Cloud URL, Atlassian email, and API token
-3. Generate a token at **id.atlassian.com → Security → API tokens**
-4. Edit any project (✎) to link a Jira ticket key (e.g. `PROJ-42`)
-5. Time is logged to Jira automatically when the timer stops
+If you don't have an Apple Developer ID the app will be unsigned.
+macOS Gatekeeper will block the first open. To fix:
+
+- Right-click TimeTrack.app -> Open -> click Open in the dialog
+- After that it launches normally
+
+Or run once in Terminal:
+```bash
+xattr -dr com.apple.quarantine /Applications/TimeTrack.app
+```
 
 ---
 
-## Data
+## Features
 
-All data is stored at `~/.timetrack_data.json` — it persists across app updates.
+- Multi-project tracking with live timer
+- Jira Cloud worklog sync (edit duration before posting)
+- Manual time entry with notes
+- Delete sessions (optionally removes Jira worklog too)
+- CSV and JSON export with project and date filtering
+- Customisable stat cards (click any card to change time window)
+- Menu-bar icon: red when tracking, green when idle
+  - Quick start/stop and project switching from the menu bar
+
+---
+
+## System Requirements
+
+- macOS 11.0 (Big Sur) or later — required for PySide6
+- Apple Silicon or Intel
+- ~180 MB disk space (includes Qt framework)
+
+---
+
+## Data storage
+
+All data saved to ~/.timetrack_data.json
+Back this file up to preserve your history.

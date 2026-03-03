@@ -1,5 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 # TimeTrack.spec — PyInstaller build config for macOS (PySide6)
+# Build with:  pyinstaller TimeTrack.spec --noconfirm --clean
 
 import os
 
@@ -20,12 +21,16 @@ a = Analysis(
         "PySide6.QtWidgets",
         "PySide6.QtCore",
         "PySide6.QtGui",
+        "PySide6.QtNetwork",
         "shiboken6",
     ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["tkinter", "matplotlib", "numpy", "pandas", "scipy"],
+    excludes=[
+        "tkinter", "matplotlib", "numpy", "pandas", "scipy",
+        "PyQt5", "PyQt6", "wx",
+    ],
     cipher=block_cipher,
     noarchive=False,
 )
@@ -40,7 +45,7 @@ exe = EXE(
     name="TimeTrack",
     debug=False,
     strip=False,
-    upx=True,
+    upx=False,          # UPX can break PySide6 binaries — keep off
     console=False,
     icon="TimeTrack.icns" if os.path.exists("TimeTrack.icns") else None,
 )
@@ -51,7 +56,7 @@ coll = COLLECT(
     a.zipfiles,
     a.datas,
     strip=False,
-    upx=True,
+    upx=False,
     name="TimeTrack",
 )
 
@@ -63,12 +68,12 @@ app = BUNDLE(
     info_plist={
         "CFBundleName":               "TimeTrack",
         "CFBundleDisplayName":        "TimeTrack",
-        "CFBundleVersion":            "2.0.0",
-        "CFBundleShortVersionString": "2.0.0",
+        "CFBundleVersion":            "1.0.0",
+        "CFBundleShortVersionString": "1.0.0",
         "CFBundleIdentifier":         "com.timetrack.app",
         "NSHighResolutionCapable":    True,
-        "LSMinimumSystemVersion":     "11.0.0",
-        "NSHumanReadableCopyright":   "TimeTrack",
+        "LSMinimumSystemVersion":     "11.0.0",   # PySide6 requires macOS 11+
+        "NSHumanReadableCopyright":   "2025 TimeTrack",
         "LSUIElement":                False,
         "NSAppTransportSecurity": {
             "NSAllowsArbitraryLoads": True,
