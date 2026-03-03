@@ -2,6 +2,21 @@
 
 A dark-themed desktop time tracker with multi-project support, manual entry, and Jira worklog sync.
 
+## Features
+- Multi project Tracking
+- Status bar icon shows when tracking is active or not and which project is active
+- Change project from status bar icon right click
+- create time logs automatically through tracking
+- create time logs manually with comments
+- tracked time can be synced to jira
+- time logs can be edited
+- time logs can be deleted
+- "i" button displays jira ticket information
+- time can be exported in csv or json format
+- time can be exported over selectable and custom time periods
+- main screen displays time over selectable time periods
+- time logs are grouped according to project.
+
 ---
 
 ## Build the Mac App — 3 steps
@@ -38,13 +53,13 @@ Total build time: ~30–60 seconds.
 - **macOS 10.13 (High Sierra) or later**
 - **Python 3.9+** — download from https://python.org  
   *(Homebrew also works: `brew install python`)*
-- **tkinter** — if missing, run: `brew install python-tk`
+- **PySide6** — if missing, run: `pip3 install pyside6`
 
 ---
 
 ## First launch (Gatekeeper)
 
-Because the app isn't signed with an Apple Developer certificate, macOS will
+Because the app isn't signed with an Apple Developer certificate, macOS may
 show a warning the first time.
 
 **To open it:**
