@@ -1,89 +1,113 @@
-# TimeTrack — macOS
+# ⏱ TimeTrack
 
-Multi-project time tracker with Jira worklog sync, manual entry, export, and a menu-bar status icon.
+Multi-project time tracker with Jira sync, categories, manual entry, export, and a menu-bar icon.
 
 ---
 
-## Quick Start (run from source)
+## Repository layout
 
-```bash
-pip3 install PySide6 requests
-python3 time_tracker.py
+```
+timetrack/
+├── time_tracker.py          ← application source (single file)
+├── requirements.txt
+├── TimeTrack_mac.spec       ← PyInstaller config for macOS
+├── TimeTrack_windows.spec   ← PyInstaller config for Windows
+├── build_mac.sh             ← local macOS build script
+├── build_windows.bat        ← local Windows build script
+├── scripts/
+│   ├── create_icon.py       ← generates TimeTrack.icns + TimeTrack.ico
+│   ├── make_dmg.sh          ← creates the macOS DMG (called by build_mac.sh)
+│   └── installer.iss        ← Inno Setup config for the Windows installer
+└── .github/
+    └── workflows/
+        └── release.yml      ← GitHub Actions: builds both platforms on tag push
 ```
 
 ---
 
-## Building the DMG
+## Quick start (run from source)
 
-### Requirements
-- macOS 11 (Big Sur) or later
-- Python 3.9+  (`python3 --version`)
-- Xcode Command Line Tools  (`xcode-select --install`)
+```bash
+pip install PySide6 requests
+python time_tracker.py
+```
 
-### One command
+---
 
+## Local builds
+
+### macOS
 ```bash
 chmod +x build_mac.sh
 ./build_mac.sh
 ```
+Produces `dist/TimeTrack.app` and `dist/TimeTrack.dmg`.  
+Requires macOS 11+ and Python 3.9+.
 
-The script will:
-
-1. Create a `.venv` and install PySide6, requests, pyinstaller, Pillow
-2. Generate `TimeTrack.icns` from `create_icon.py`
-3. Build `dist/TimeTrack.app` with PyInstaller
-4. Produce `dist/TimeTrack.dmg` — a compressed, drag-to-install disk image
-5. Optionally sign the app if a Developer ID certificate is in your keychain
-
-### Output
-
+### Windows
+Double-click `build_windows.bat`, or from a terminal:
 ```
-dist/
-  TimeTrack.app    <- standalone native app (no Python needed)
-  TimeTrack.dmg    <- distributable installer image
+build_windows.bat
 ```
-
-Open the DMG, drag TimeTrack to Applications, then launch from Spotlight or the Dock.
+Produces `dist/TimeTrack.exe` (portable) and `dist/TimeTrack_Setup.exe` (installer, if Inno Setup is installed).  
+Download Inno Setup free from https://jrsoftware.org/isinfo.php
 
 ---
 
-## First launch (unsigned builds)
+## Automated builds with GitHub Actions
 
-If you don't have an Apple Developer ID the app will be unsigned.
-macOS Gatekeeper will block the first open. To fix:
+Every time you push a version tag, GitHub automatically builds both the macOS DMG and the Windows installer and attaches them to a GitHub Release.
 
-- Right-click TimeTrack.app -> Open -> click Open in the dialog
-- After that it launches normally
+### One-time setup
 
-Or run once in Terminal:
+1. Push this repository to GitHub
+2. That's it — no secrets or extra configuration needed for unsigned builds
+
+### Releasing a new version
+
 ```bash
-xattr -dr com.apple.quarantine /Applications/TimeTrack.app
+git add .
+git commit -m "Release v1.1.0"
+git tag v1.1.0
+git push origin main --tags
 ```
 
----
+GitHub Actions will:
+1. Build `TimeTrack.dmg` on a macOS runner
+2. Build `TimeTrack_Setup.exe` on a Windows runner  
+3. Create a GitHub Release named `TimeTrack v1.1.0` with both files attached
 
-## Features
+You can also trigger a build manually from the **Actions** tab → **Build & Release** → **Run workflow**.
 
-- Multi-project tracking with live timer
-- Jira Cloud worklog sync (edit duration before posting)
-- Manual time entry with notes
-- Delete sessions (optionally removes Jira worklog too)
-- CSV and JSON export with project and date filtering
-- Customisable stat cards (click any card to change time window)
-- Menu-bar icon: red when tracking, green when idle
-  - Quick start/stop and project switching from the menu bar
+### Viewing build output
+
+Go to your repo on GitHub → **Actions** → click the latest run → download the artifacts from the bottom of the summary page.
 
 ---
 
-## System Requirements
+## Code signing
 
-- macOS 11.0 (Big Sur) or later — required for PySide6
-- Apple Silicon or Intel
-- ~180 MB disk space (includes Qt framework)
+### macOS
+If you have an Apple Developer ID certificate in your keychain, `build_mac.sh` signs both the `.app` and `.dmg` automatically. Without it, users right-click → Open on first launch.
+
+For CI signing, add your certificate to GitHub Secrets and update the workflow.
+
+### Windows  
+Without an Authenticode certificate, Windows Defender SmartScreen shows a warning on first run. Users click "More info" → "Run anyway". For production distribution, purchase a certificate from DigiCert or Sectigo and add signing to the workflow.
 
 ---
 
-## Data storage
+## System requirements
 
-All data saved to ~/.timetrack_data.json
-Back this file up to preserve your history.
+| Platform | Minimum OS          | Python (source only) |
+|----------|---------------------|----------------------|
+| macOS    | 11.0 (Big Sur)      | 3.9+                 |
+| Windows  | Windows 10 (1809+)  | 3.9+                 |
+
+Bundled app: ~150–200 MB (includes Qt framework). No Python required for end users.
+
+---
+
+## Data
+
+All data saved to `~/.timetrack_data.json` (macOS/Linux) or `C:\Users\you\.timetrack_data.json` (Windows). Back this file up to preserve your history.

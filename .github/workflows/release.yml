@@ -1,0 +1,129 @@
+name: Build & Release
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Triggers:
+#   • Push a version tag:  git tag v1.2.0 && git push origin v1.2.0
+#   • Manually from the Actions tab (workflow_dispatch)
+# ─────────────────────────────────────────────────────────────────────────────
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version label (e.g. 1.2.0)"
+        required: false
+        default: "dev"
+
+jobs:
+
+  # ── macOS — produces TimeTrack.dmg ─────────────────────────────────────────
+  build-mac:
+    name: macOS DMG
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install PySide6 requests pyinstaller Pillow
+
+      - name: Generate icons
+        run: python scripts/create_icon.py
+
+      - name: Build app with PyInstaller
+        run: |
+          pyinstaller TimeTrack_mac.spec --noconfirm --clean
+
+      - name: Create DMG
+        run: bash scripts/make_dmg.sh
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TimeTrack-mac
+          path: dist/TimeTrack.dmg
+          retention-days: 30
+
+  # ── Windows — produces TimeTrack_Setup.exe ─────────────────────────────────
+  build-windows:
+    name: Windows Installer
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install PySide6 requests pyinstaller Pillow
+
+      - name: Generate icons
+        run: python scripts/create_icon.py
+
+      - name: Build app with PyInstaller
+        run: pyinstaller TimeTrack_windows.spec --noconfirm --clean
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build installer
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" scripts\installer.iss
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TimeTrack-windows
+          path: dist\TimeTrack_Setup.exe
+          retention-days: 30
+
+  # ── GitHub Release — attaches both files ───────────────────────────────────
+  release:
+    name: Create GitHub Release
+    needs: [build-mac, build-windows]
+    runs-on: ubuntu-latest
+    # Only create a real release on tag pushes, not manual runs
+    if: startsWith(github.ref, 'refs/tags/')
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download macOS artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: TimeTrack-mac
+          path: artifacts/
+
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: TimeTrack-windows
+          path: artifacts/
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "TimeTrack ${{ github.ref_name }}"
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            artifacts/TimeTrack.dmg
+            artifacts/TimeTrack_Setup.exe
