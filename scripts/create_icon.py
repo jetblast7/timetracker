@@ -10,9 +10,15 @@ import io
 import math
 import os
 import struct
+import sys
+
+# Force UTF-8 output on Windows (cmd/PowerShell default to cp1252)
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 from PIL import Image, ImageDraw
 
-# ── Output paths ──────────────────────────────────────────────────────────────
+# - Output paths -
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR   = os.path.dirname(SCRIPT_DIR)
 ICNS_OUT   = os.path.join(ROOT_DIR, "TimeTrack.icns")
@@ -75,7 +81,7 @@ def draw_icon(size: int) -> Image.Image:
     return img
 
 
-# ── ICNS builder ──────────────────────────────────────────────────────────────
+# - ICNS builder -
 
 def make_icns(out: str = ICNS_OUT) -> None:
     SIZE_MAP = {
@@ -96,10 +102,10 @@ def make_icns(out: str = ICNS_OUT) -> None:
             f.write(ostype)
             f.write(struct.pack(">I", 8 + len(data)))
             f.write(data)
-    print(f"  ✔  {out}  ({total:,} bytes)")
+    print(f"  OK  {out}  ({total:,} bytes)")
 
 
-# ── ICO builder ───────────────────────────────────────────────────────────────
+# - ICO builder -
 
 def make_ico(out: str = ICO_OUT) -> None:
     # Windows ICO standard sizes
@@ -113,13 +119,13 @@ def make_ico(out: str = ICO_OUT) -> None:
         append_images=images[1:],
     )
     file_size = os.path.getsize(out)
-    print(f"  ✔  {out}  ({file_size:,} bytes)")
+    print(f"  OK  {out}  ({file_size:,} bytes)")
 
 
-# ── Entry point ───────────────────────────────────────────────────────────────
+# - Entry point -
 
 if __name__ == "__main__":
-    print("Generating icons…")
+    print("Generating icons...")
     make_icns()
     make_ico()
     print("Done.")

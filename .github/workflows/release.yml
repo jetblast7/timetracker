@@ -59,6 +59,9 @@ jobs:
     name: Windows Installer
     runs-on: windows-latest
 
+    env:
+      PYTHONUTF8: "1"   # force UTF-8 for all Python I/O on Windows
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
