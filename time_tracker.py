@@ -25,51 +25,32 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QTimer, Signal, QThread, QDate, QTime, QSize, QPoint
 from PySide6.QtGui import QFont, QColor, QFontDatabase, QPixmap, QPainter, QBrush, QPen, QIcon, QAction
 
-# ── Theme system ─────────────────────────────────────────────────────────────
+# ── Colors ────────────────────────────────────────────────────────────────────
 DATA_FILE = os.path.expanduser("~/.timetrack_data.json")
 
-DARK_THEME = {
-    "BG":       "#1a1a2e", "SURFACE":  "#16213e", "CARD":     "#0f3460",
-    "ACCENT":   "#e94560", "ACCENT2":  "#533483", "TEXT":     "#eaeaea",
-    "TEXT_DIM": "#8892b0", "SUCCESS":  "#64ffda", "WARNING":  "#ffd166",
-    "BORDER":   "#2a2a4a", "ALT_ROW":  "#1c2440", "TREE_HOVER":"#1e2d50",
-}
-LIGHT_THEME = {
-    "BG":        "#f5f6fa", "SURFACE":   "#ffffff", "CARD":      "#eef0f6",
-    "ACCENT":    "#e94560", "ACCENT2":   "#6a4fc8", "TEXT":      "#1a1a2e",
-    "TEXT_DIM":  "#5e6278", "SUCCESS":   "#0a8f6f", "WARNING":   "#b06000",
-    "BORDER":    "#d0d4e4", "ALT_ROW":   "#f0f2f8", "TREE_HOVER":"#e4e8f4",
-}
-
-# Mutable globals — updated by set_theme()
-BG = DARK_THEME["BG"]; SURFACE = DARK_THEME["SURFACE"]; CARD = DARK_THEME["CARD"]
-ACCENT = DARK_THEME["ACCENT"]; ACCENT2 = DARK_THEME["ACCENT2"]
-TEXT = DARK_THEME["TEXT"]; TEXT_DIM = DARK_THEME["TEXT_DIM"]
-SUCCESS = DARK_THEME["SUCCESS"]; WARNING = DARK_THEME["WARNING"]
-BORDER = DARK_THEME["BORDER"]; ALT_ROW = DARK_THEME["ALT_ROW"]
-TREE_HOVER = DARK_THEME["TREE_HOVER"]
-
-# Fixed colors (same in both themes)
+BG        = "#1a1a2e"
+SURFACE   = "#16213e"
+CARD      = "#0f3460"
+ACCENT    = "#e94560"
+ACCENT2   = "#533483"
+TEXT      = "#eaeaea"
+TEXT_DIM  = "#8892b0"
+SUCCESS   = "#64ffda"
+WARNING   = "#ffd166"
+BORDER    = "#2a2a4a"
 JIRA_BLUE = "#0052cc"
-GREEN     = "#27ae60"; GREEN_H = "#2ecc71"
-RED       = "#c0392b"; RED_H   = "#e74c3c"
-GREY      = "#7f8c8d"; GREY_H  = "#95a5a6"
-PURPLE    = "#8e44ad"; PURPLE_H = "#9b59b6"
-BLUE      = "#2980b9"; BLUE_H   = "#3498db"
+GREEN     = "#27ae60"
+GREEN_H   = "#2ecc71"
+RED       = "#c0392b"
+RED_H     = "#e74c3c"
+GREY      = "#7f8c8d"
+GREY_H    = "#95a5a6"
+PURPLE    = "#8e44ad"
+PURPLE_H  = "#9b59b6"
+BLUE      = "#2980b9"
+BLUE_H    = "#3498db"
 
-def set_theme(name):
-    """Update all colour globals for the chosen theme ('dark' or 'light')."""
-    import builtins
-    palette = DARK_THEME if name == "dark" else LIGHT_THEME
-    g = globals()
-    for k, v in palette.items():
-        g[k] = v
-
-CURRENT_THEME = "dark"
-
-def build_stylesheet():
-    """Generate the Qt stylesheet using the current theme globals."""
-    return f"""
+APP_STYLESHEET = f"""
 QMainWindow, QDialog, QWidget {{
     background-color: {BG};
     color: {TEXT};
@@ -134,12 +115,12 @@ QScrollArea {{ border: none; background-color: {SURFACE}; }}
 QTreeWidget {{
     background-color: {SURFACE}; color: {TEXT};
     border: none; outline: none;
-    alternate-background-color: {ALT_ROW};
+    alternate-background-color: #1c2440;
     show-decoration-selected: 1;
 }}
 QTreeWidget::item {{ height: 38px; padding-left: 2px; border: none; }}
 QTreeWidget::item:selected {{ background-color: {ACCENT2}; color: {TEXT}; }}
-QTreeWidget::item:hover:!selected {{ background-color: {TREE_HOVER}; }}
+QTreeWidget::item:hover:!selected {{ background-color: #1e2d50; }}
 QTreeWidget::branch {{
     background-color: {SURFACE};
 }}
@@ -177,7 +158,6 @@ QMessageBox QPushButton {{
 QMessageBox QPushButton:hover {{ background-color: #0065ff; }}
 """
 
-
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def load_data():
@@ -189,7 +169,7 @@ def load_data():
             pass
     return {"projects": [], "sessions": [],
             "jira": {"url": "", "email": "", "token": ""},
-            "ticket_map": {}, "categories": [], "category_map": {}}
+            "ticket_map": {}}
 
 def save_data(data):
     with open(DATA_FILE, "w") as f:
@@ -286,10 +266,7 @@ STAT_WINDOWS = {
 }
 
 DEFAULT_STAT_CONFIGS = ["today", "last_7", "all_time"]
-
-def get_stat_colors():
-    """Return stat card value colours using the current theme."""
-    return [SUCCESS, WARNING, ACCENT]
+STAT_COLORS          = [SUCCESS, WARNING, ACCENT]   # one per card slot
 
 
 # ── Tray icon helpers ─────────────────────────────────────────────────────────
@@ -557,20 +534,11 @@ class JiraSettingsDialog(QDialog):
 # ── Project Dialog ────────────────────────────────────────────────────────────
 
 class ProjectDialog(QDialog):
-    # Palette of tag background colors (cycles by category index)
-    TAG_COLORS = [
-        "#6a4fc8", "#0a8f6f", "#b06000", "#0052cc",
-        "#c0392b", "#1a6b8a", "#7d3c98", "#1e8449",
-    ]
-
-    def __init__(self, parent, name="", ticket="", all_categories=None, assigned_cats=None):
+    def __init__(self, parent, name="", ticket=""):
         super().__init__(parent)
         self.setWindowTitle("Edit Project" if name else "New Project")
-        self.setFixedWidth(440)
+        self.setFixedWidth(400)
         self.setModal(True)
-
-        self._all_cats      = list(all_categories or [])
-        self._assigned_cats = set(assigned_cats or [])
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 20)
@@ -580,7 +548,6 @@ class ProjectDialog(QDialog):
         title.setStyleSheet(f"color: {TEXT}; font-size: 16px; font-weight: bold;")
         layout.addWidget(title)
 
-        # ── Name + Ticket card ────────────────────────────────────────────────
         card = card_frame(SURFACE)
         cl = QVBoxLayout(card)
         cl.setContentsMargins(16, 16, 16, 16)
@@ -595,52 +562,6 @@ class ProjectDialog(QDialog):
         self.e_ticket.setPlaceholderText("e.g. PROJ-42")
         cl.addWidget(self.e_ticket)
         layout.addWidget(card)
-
-        # ── Categories card ───────────────────────────────────────────────────
-        cat_card = card_frame(SURFACE)
-        cat_cl = QVBoxLayout(cat_card)
-        cat_cl.setContentsMargins(16, 12, 16, 14)
-        cat_cl.setSpacing(8)
-
-        cat_hdr = QHBoxLayout()
-        cat_hdr.addWidget(section_label("CATEGORIES"))
-        cat_hdr.addStretch()
-        cat_hint = QLabel("assign one or more")
-        cat_hint.setStyleSheet(f"color: {TEXT_DIM}; font-size: 9px; background: transparent;")
-        cat_hdr.addWidget(cat_hint)
-        cat_cl.addLayout(cat_hdr)
-
-        # Scrollable checkbox list for existing categories
-        self._cat_scroll = QScrollArea()
-        self._cat_scroll.setWidgetResizable(True)
-        self._cat_scroll.setFixedHeight(100)
-        self._cat_scroll.setStyleSheet(
-            f"QScrollArea {{ background: {CARD}; border: 1px solid {BORDER}; border-radius: 5px; }}"
-            f"QScrollArea > QWidget > QWidget {{ background: transparent; }}"
-        )
-        self._cat_inner = QWidget()
-        self._cat_inner.setStyleSheet("background: transparent;")
-        self._cat_vb = QVBoxLayout(self._cat_inner)
-        self._cat_vb.setSpacing(4)
-        self._cat_vb.setContentsMargins(8, 6, 8, 6)
-        self._cat_checks = {}   # cat_name -> QCheckBox
-        self._rebuild_cat_list()
-        self._cat_scroll.setWidget(self._cat_inner)
-        cat_cl.addWidget(self._cat_scroll)
-
-        # Add new category inline
-        new_row = QHBoxLayout()
-        new_row.setSpacing(6)
-        self._new_cat_edit = QLineEdit()
-        self._new_cat_edit.setPlaceholderText("New category name…")
-        self._new_cat_edit.returnPressed.connect(self._add_new_category)
-        new_row.addWidget(self._new_cat_edit, 1)
-        add_cat_btn = styled_btn("+ Add", BLUE, BLUE_H, font_size=10)
-        add_cat_btn.setFixedWidth(64)
-        add_cat_btn.clicked.connect(self._add_new_category)
-        new_row.addWidget(add_cat_btn)
-        cat_cl.addLayout(new_row)
-        layout.addWidget(cat_card)
 
         layout.addWidget(dim_label(
             "If a ticket is set, time is logged to Jira when the timer stops.", 9))
@@ -657,62 +578,16 @@ class ProjectDialog(QDialog):
 
         self.e_name.setFocus()
 
-    def _rebuild_cat_list(self):
-        # Remove existing widgets
-        while self._cat_vb.count():
-            item = self._cat_vb.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-        self._cat_checks.clear()
-
-        if not self._all_cats:
-            hint = QLabel("No categories yet — type one above and click + Add")
-            hint.setStyleSheet(f"color: {TEXT_DIM}; font-size: 10px; background: transparent;")
-            hint.setWordWrap(True)
-            self._cat_vb.addWidget(hint)
-            return
-
-        for cat in self._all_cats:
-            cb = QCheckBox(cat)
-            cb.setChecked(cat in self._assigned_cats)
-            self._cat_checks[cat] = cb
-            self._cat_vb.addWidget(cb)
-        self._cat_vb.addStretch()
-
-    def _add_new_category(self):
-        name = self._new_cat_edit.text().strip()
-        if not name:
-            return
-        if name in self._all_cats:
-            # Just check it
-            if name in self._cat_checks:
-                self._cat_checks[name].setChecked(True)
-        else:
-            self._all_cats.append(name)
-            self._assigned_cats.add(name)
-            self._rebuild_cat_list()
-            # Auto-check the newly added one
-            if name in self._cat_checks:
-                self._cat_checks[name].setChecked(True)
-        self._new_cat_edit.clear()
-
     def _save(self):
         name = self.e_name.text().strip()
         if not name:
             QMessageBox.warning(self, "Required", "Project name cannot be empty.")
             return
-        selected_cats = [cat for cat, cb in self._cat_checks.items() if cb.isChecked()]
-        self._result = {
-            "name":       name,
-            "ticket":     self.e_ticket.text().strip().upper(),
-            "categories": selected_cats,
-            "all_categories": self._all_cats,  # updated list including any newly added
-        }
+        self._result = {"name": name, "ticket": self.e_ticket.text().strip().upper()}
         self.accept()
 
     def get_result(self):
         return getattr(self, "_result", None)
-
 
 # ── Edit Time & Sync Dialog ───────────────────────────────────────────────────
 
@@ -820,31 +695,6 @@ class EditSessionDialog(QDialog):
         cl.addWidget(hms_container)
         layout.addWidget(card)
 
-        # ── Note / Comment ────────────────────────────────────────────────────
-        note_card = card_frame(SURFACE)
-        nc = QVBoxLayout(note_card)
-        nc.setContentsMargins(16, 12, 16, 14)
-        nc.setSpacing(8)
-
-        note_hdr = QHBoxLayout()
-        note_hdr.setContentsMargins(0, 0, 0, 0)
-        note_title = QLabel("Note / Comment")
-        note_title.setStyleSheet(f"color: {TEXT}; font-size: 11px; font-weight: bold; background: transparent;")
-        note_hdr.addWidget(note_title)
-        note_hdr.addStretch()
-        if ticket:
-            note_hint = QLabel("Also sent as Jira comment when syncing")
-            note_hint.setStyleSheet(f"color: {TEXT_DIM}; font-size: 9px; background: transparent;")
-            note_hdr.addWidget(note_hint)
-        nc.addLayout(note_hdr)
-
-        self.note_edit = QTextEdit()
-        self.note_edit.setPlaceholderText("Add a note about this session… (optional)")
-        self.note_edit.setPlainText(session.get("note", "") or "")
-        self.note_edit.setFixedHeight(70)
-        nc.addWidget(self.note_edit)
-        layout.addWidget(note_card)
-
         self.resync_cb = QCheckBox(f"Re-sync updated time to Jira  ({ticket})")
         if ticket:
             layout.addWidget(self.resync_cb)
@@ -866,11 +716,7 @@ class EditSessionDialog(QDialog):
         if secs is None:
             QMessageBox.warning(self, "Invalid", "Please enter a valid duration.")
             return
-        self._result = {
-            "duration": secs,
-            "resync":   self.resync_cb.isChecked(),
-            "note":     self.note_edit.toPlainText().strip(),
-        }
+        self._result = {"duration": secs, "resync": self.resync_cb.isChecked()}
         self.accept()
 
     def get_result(self): return getattr(self, "_result", None)
@@ -1251,27 +1097,6 @@ class ExportDialog(QDialog):
         self._fmt_btns = list(self._fmt_group.buttons())
         lay.addLayout(fmt_row)
 
-        # ── Category totals option ────────────────────────────────────────────
-        cat_card = card_frame(SURFACE)
-        cc_lay = QVBoxLayout(cat_card)
-        cc_lay.setContentsMargins(14, 10, 14, 10)
-        cc_lay.setSpacing(6)
-        self._cat_totals_cb = QCheckBox("Include category time totals in export")
-        self._cat_totals_cb.setToolTip(
-            "Appends a summary table showing total hours per category\n"
-            "for the selected projects and time range."
-        )
-        self._cat_totals_cb.stateChanged.connect(self._update_preview)
-        cc_lay.addWidget(self._cat_totals_cb)
-
-        # Show which categories exist in the current filter
-        self._cat_hint_lbl = QLabel("")
-        self._cat_hint_lbl.setStyleSheet(f"color: {TEXT_DIM}; font-size: 9px; background: transparent;")
-        self._cat_hint_lbl.setWordWrap(True)
-        cc_lay.addWidget(self._cat_hint_lbl)
-        lay.addWidget(cat_card)
-        self._update_cat_hint()
-
         # ── Preview count + export button ─────────────────────────────────────
         bot = QHBoxLayout()
         self._preview_lbl = QLabel("")
@@ -1288,31 +1113,6 @@ class ExportDialog(QDialog):
         self._update_preview()
 
     # ── helpers ───────────────────────────────────────────────────────────────
-
-    def _update_cat_hint(self):
-        """Update the small hint label showing categories in the current filter."""
-        projs = self._get_selected_projects()
-        cat_map = self._data.get("category_map", {})
-        cats = set()
-        for p in projs:
-            cats.update(cat_map.get(p, []))
-        if cats:
-            self._cat_hint_lbl.setText("Categories in selection: " + ",  ".join(sorted(cats)))
-        else:
-            self._cat_hint_lbl.setText("No categories assigned to the selected projects.")
-
-    def _get_category_totals(self, sessions):
-        """Return {cat_name: total_seconds} for the given sessions."""
-        cat_map = self._data.get("category_map", {})
-        totals  = {}
-        for s in sessions:
-            proj = s.get("project", "")
-            cats = cat_map.get(proj, [])
-            if not cats:
-                cats = ["(Uncategorised)"]
-            for cat in cats:
-                totals[cat] = totals.get(cat, 0) + s["duration"]
-        return totals
 
     def _section_label(self, text):
         l = QLabel(text)
@@ -1414,7 +1214,6 @@ class ExportDialog(QDialog):
         self._preview_lbl.setText(
             f"{len(sessions)} session{'s' if len(sessions) != 1 else ''}  •  {fmt_duration(total)} total"
         )
-        self._update_cat_hint()
 
     def _get_format(self):
         for b in self._fmt_btns:
@@ -1431,8 +1230,6 @@ class ExportDialog(QDialog):
 
         fmt  = self._get_format()
         ext  = "csv" if fmt == "csv" else "json"
-        include_cats = self._cat_totals_cb.isChecked()
-
         path, _ = QFileDialog.getSaveFileName(
             self, "Save Export",
             os.path.expanduser(f"~/timetrack_export.{ext}"),
@@ -1442,21 +1239,15 @@ class ExportDialog(QDialog):
             return
 
         try:
-            sorted_sessions = sorted(sessions, key=lambda x: x["start"])
-            cat_map         = self._data.get("category_map", {})
-
             if fmt == "csv":
                 with open(path, "w", newline="", encoding="utf-8") as f:
                     writer = csv.writer(f)
-                    writer.writerow(["Project", "Categories", "Date", "Start", "End",
+                    writer.writerow(["Project", "Date", "Start", "End",
                                      "Duration (h:m:s)", "Duration (seconds)",
                                      "Ticket", "Jira Sync", "Manual", "Note"])
-                    for s in sorted_sessions:
-                        proj      = s.get("project", "")
-                        cats_str  = ", ".join(cat_map.get(proj, []))
+                    for s in sorted(sessions, key=lambda x: x["start"]):
                         writer.writerow([
-                            proj,
-                            cats_str,
+                            s.get("project", ""),
                             s.get("date", ""),
                             datetime.fromtimestamp(s["start"]).strftime("%H:%M:%S"),
                             datetime.fromtimestamp(s["end"]).strftime("%H:%M:%S"),
@@ -1467,43 +1258,22 @@ class ExportDialog(QDialog):
                             "Yes" if s.get("manual") else "No",
                             s.get("note", ""),
                         ])
-
-                    if include_cats:
-                        cat_totals = self._get_category_totals(sessions)
-                        writer.writerow([])   # blank spacer
-                        writer.writerow(["── CATEGORY TOTALS ──", "", "", "", "", "", "", "", "", "", ""])
-                        writer.writerow(["Category", "Duration (h:m:s)", "Duration (seconds)",
-                                         "", "", "", "", "", "", "", ""])
-                        for cat, secs in sorted(cat_totals.items()):
-                            writer.writerow([cat, fmt_duration(secs), int(secs),
-                                             "", "", "", "", "", "", "", ""])
-
-            else:  # JSON
-                export_data = {
-                    "sessions": [
-                        {
-                            "project":          s.get("project"),
-                            "categories":       cat_map.get(s.get("project", ""), []),
-                            "date":             s.get("date"),
-                            "start":            datetime.fromtimestamp(s["start"]).isoformat(),
-                            "end":              datetime.fromtimestamp(s["end"]).isoformat(),
-                            "duration_seconds": int(s["duration"]),
-                            "duration_hms":     fmt_duration(s["duration"]),
-                            "ticket":           s.get("ticket", ""),
-                            "jira_sync":        s.get("jira_sync", "none"),
-                            "manual":           bool(s.get("manual")),
-                            "note":             s.get("note", ""),
-                        }
-                        for s in sorted_sessions
-                    ]
-                }
-                if include_cats:
-                    cat_totals = self._get_category_totals(sessions)
-                    export_data["category_totals"] = {
-                        cat: {"duration_seconds": int(secs), "duration_hms": fmt_duration(secs)}
-                        for cat, secs in sorted(cat_totals.items())
+            else:
+                export_data = [
+                    {
+                        "project":          s.get("project"),
+                        "date":             s.get("date"),
+                        "start":            datetime.fromtimestamp(s["start"]).isoformat(),
+                        "end":              datetime.fromtimestamp(s["end"]).isoformat(),
+                        "duration_seconds": int(s["duration"]),
+                        "duration_hms":     fmt_duration(s["duration"]),
+                        "ticket":           s.get("ticket", ""),
+                        "jira_sync":        s.get("jira_sync", "none"),
+                        "manual":           bool(s.get("manual")),
+                        "note":             s.get("note", ""),
                     }
-
+                    for s in sorted(sessions, key=lambda x: x["start"])
+                ]
                 with open(path, "w", encoding="utf-8") as f:
                     json.dump(export_data, f, indent=2)
 
@@ -1512,149 +1282,6 @@ class ExportDialog(QDialog):
             self.accept()
         except Exception as e:
             QMessageBox.warning(self, "Export Failed", str(e))
-
-# ── Settings Dialog ───────────────────────────────────────────────────────────
-
-class SettingsDialog(QDialog):
-    """App settings: appearance (theme) + Jira credentials."""
-
-    theme_changed = Signal(str)   # emits "dark" or "light"
-
-    def __init__(self, parent, data):
-        super().__init__(parent)
-        self.setWindowTitle("Settings")
-        self.setModal(True)
-        self.setMinimumWidth(460)
-        self._data = data
-        self._pending_theme = data.get("settings", {}).get("theme", "dark")
-
-        self.setStyleSheet(f"QDialog {{ background-color: {BG}; }}")
-
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(24, 20, 24, 20)
-        lay.setSpacing(18)
-
-        title = QLabel("Settings")
-        title.setStyleSheet(f"font-size: 20px; font-weight: bold; color: {TEXT};")
-        lay.addWidget(title)
-
-        # ── Appearance ────────────────────────────────────────────────────────
-        lay.addWidget(self._section("APPEARANCE"))
-        appear_card = self._card()
-        ac_lay = QVBoxLayout(appear_card)
-        ac_lay.setContentsMargins(14, 12, 14, 12)
-        ac_lay.setSpacing(10)
-
-        theme_row = QHBoxLayout()
-        theme_lbl = QLabel("Theme")
-        theme_lbl.setStyleSheet(f"color: {TEXT}; font-size: 13px;")
-        theme_row.addWidget(theme_lbl)
-        theme_row.addStretch()
-
-        self._dark_btn  = self._theme_btn("🌙  Dark",  "dark")
-        self._light_btn = self._theme_btn("☀️  Light", "light")
-        for b in (self._dark_btn, self._light_btn):
-            b.clicked.connect(self._on_theme_btn)
-            theme_row.addWidget(b)
-
-        self._refresh_theme_btns()
-        ac_lay.addLayout(theme_row)
-        lay.addWidget(appear_card)
-
-        # ── Jira ──────────────────────────────────────────────────────────────
-        lay.addWidget(self._section("JIRA CLOUD"))
-        jira_card = self._card()
-        jc_lay = QVBoxLayout(jira_card)
-        jc_lay.setContentsMargins(14, 12, 14, 14)
-        jc_lay.setSpacing(10)
-
-        jira = data.get("jira", {})
-        for label, key, placeholder, pw in [
-            ("Site URL",   "url",   "https://yourcompany.atlassian.net", False),
-            ("Email",      "email", "you@company.com",                  False),
-            ("API Token",  "token", "Your Jira API token",               True),
-        ]:
-            row = QHBoxLayout(); row.setSpacing(10)
-            lbl = QLabel(label)
-            lbl.setFixedWidth(80)
-            lbl.setStyleSheet(f"color: {TEXT_DIM}; font-size: 12px;")
-            field = QLineEdit(jira.get(key, ""))
-            field.setPlaceholderText(placeholder)
-            if pw:
-                field.setEchoMode(QLineEdit.Password)
-            row.addWidget(lbl); row.addWidget(field)
-            setattr(self, f"_jira_{key}", field)
-            jc_lay.addLayout(row)
-
-        # Token help link
-        help_lbl = QLabel('<a href="https://id.atlassian.com/manage-profile/security/api-tokens" '
-                          'style="color:#0052cc;">Generate an API token ↗</a>')
-        help_lbl.setOpenExternalLinks(True)
-        help_lbl.setStyleSheet("font-size: 11px; background: transparent;")
-        jc_lay.addWidget(help_lbl)
-        lay.addWidget(jira_card)
-
-        # ── Buttons ───────────────────────────────────────────────────────────
-        bot = QHBoxLayout()
-        bot.addStretch()
-        cancel = styled_btn("Cancel", GREY, GREY_H)
-        save   = styled_btn("Save",   JIRA_BLUE, "#0065ff")
-        cancel.clicked.connect(self.reject)
-        save.clicked.connect(self._save)
-        bot.addWidget(cancel); bot.addWidget(save)
-        lay.addLayout(bot)
-
-    # ── helpers ───────────────────────────────────────────────────────────────
-
-    def _section(self, text):
-        l = QLabel(text)
-        l.setStyleSheet(f"color: {TEXT_DIM}; font-size: 9px; font-weight: bold;")
-        return l
-
-    def _card(self):
-        f = QFrame()
-        f.setStyleSheet(f"QFrame {{ background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 8px; }}")
-        return f
-
-    def _theme_btn(self, label, key):
-        b = QPushButton(label)
-        b.setProperty("theme_key", key)
-        b.setCheckable(True)
-        b.setCursor(Qt.PointingHandCursor)
-        b.setFixedWidth(110)
-        return b
-
-    def _refresh_theme_btns(self):
-        for btn, key in ((self._dark_btn, "dark"), (self._light_btn, "light")):
-            active = (self._pending_theme == key)
-            btn.setChecked(active)
-            btn.setStyleSheet(f"""
-                QPushButton {{
-                    background-color: {"" + ACCENT if active else CARD};
-                    color: {"#ffffff" if active else TEXT_DIM};
-                    border: 1px solid {"" + ACCENT if active else BORDER};
-                    border-radius: 6px; padding: 6px 12px;
-                    font-size: 12px; font-weight: bold;
-                }}
-                QPushButton:hover:!checked {{ background-color: {SURFACE}; color: {TEXT}; }}
-            """)
-
-    def _on_theme_btn(self):
-        key = self.sender().property("theme_key")
-        self._pending_theme = key
-        self._refresh_theme_btns()
-        # Live preview — emit immediately
-        self.theme_changed.emit(key)
-
-    def _save(self):
-        self._data.setdefault("settings", {})["theme"] = self._pending_theme
-        self._data["jira"] = {
-            "url":   self._jira_url.text().strip(),
-            "email": self._jira_email.text().strip(),
-            "token": self._jira_token.text().strip(),
-        }
-        self.accept()
-
 
 # ── Main Window ───────────────────────────────────────────────────────────────
 
@@ -1668,16 +1295,10 @@ class TimeTrackerApp(QMainWindow):
         self.data           = load_data()
         self.data.setdefault("jira", {"url": "", "email": "", "token": ""})
         self.data.setdefault("ticket_map", {})
-        self.data.setdefault("categories", [])
-        self.data.setdefault("category_map", {})
         self.data.setdefault("stat_configs", list(DEFAULT_STAT_CONFIGS))
-        self.data.setdefault("settings", {"theme": "dark"})
+        # ensure exactly 3 slots
         while len(self.data["stat_configs"]) < 3:
             self.data["stat_configs"].append(DEFAULT_STAT_CONFIGS[-1])
-
-        # Apply saved theme before building UI
-        _theme = self.data["settings"].get("theme", "dark")
-        set_theme(_theme)
 
         self._active_project  = ""
         self._timer_running   = False
@@ -1740,7 +1361,6 @@ class TimeTrackerApp(QMainWindow):
         splitter.setSizes([320, 680])
         splitter.setCollapsible(0, False)
         splitter.setCollapsible(1, False)
-        self._splitter = splitter   # keep ref for theme rebuild
 
         body_layout.addWidget(splitter)
         root.addWidget(body, 1)
@@ -1749,7 +1369,6 @@ class TimeTrackerApp(QMainWindow):
         header = QWidget()
         header.setFixedHeight(60)
         header.setStyleSheet(f"background-color: {SURFACE};")
-        self._header_widget = header   # keep ref for theme repaints
 
         hl = QHBoxLayout(header)
         hl.setContentsMargins(24, 0, 16, 0)
@@ -1773,9 +1392,9 @@ class TimeTrackerApp(QMainWindow):
         export_btn.clicked.connect(self.open_export)
         hl.addWidget(export_btn)
 
-        settings_btn = styled_btn("⚙  Settings", CARD, SURFACE, TEXT_DIM, font_size=10)
-        settings_btn.clicked.connect(self.open_settings)
-        hl.addWidget(settings_btn)
+        jira_btn = styled_btn("⚙  Jira Settings", JIRA_BLUE, "#0065ff", font_size=10)
+        jira_btn.clicked.connect(self.open_jira_settings)
+        hl.addWidget(jira_btn)
 
         self._update_jira_status_label()
         return header
@@ -1862,7 +1481,7 @@ class TimeTrackerApp(QMainWindow):
         self.stat_title_labels = []   # QLabel for the window title
         self.stat_value_labels = []   # QLabel for the time value
         self.stat_cards        = []   # QFrame cards
-        for slot_idx, color in enumerate(get_stat_colors()):
+        for slot_idx, color in enumerate(STAT_COLORS):
             card = card_frame(SURFACE)
             card.setProperty("slot_idx", slot_idx)
             card.setCursor(Qt.PointingHandCursor)
@@ -1895,8 +1514,8 @@ class TimeTrackerApp(QMainWindow):
         hint = dim_label("Click project to expand  •  Double-click session to edit", 9)
         log_hdr.addWidget(hint)
         log_hdr.addStretch()
-        expand_btn  = styled_btn("Expand All",   CARD, BORDER, TEXT_DIM, 9, False)
-        collapse_btn= styled_btn("Collapse All", CARD, BORDER, TEXT_DIM, 9, False)
+        expand_btn  = styled_btn("Expand All",   CARD, "#1a3a6a", TEXT_DIM, 9, False)
+        collapse_btn= styled_btn("Collapse All", CARD, "#1a3a6a", TEXT_DIM, 9, False)
         clear_btn   = styled_btn("Clear All",    GREY, GREY_H,    "#ffffff", 9)
         expand_btn.clicked.connect(self.expand_all)
         collapse_btn.clicked.connect(self.collapse_all)
@@ -1956,61 +1575,14 @@ class TimeTrackerApp(QMainWindow):
             self.jira_status_lbl.setStyleSheet(f"color: {WARNING}; font-size: 10px; background: transparent;")
             self.jira_status_lbl.setText("● Not configured")
 
-    def open_settings(self):
-        dlg = SettingsDialog(self, self.data)
-        dlg.theme_changed.connect(self.apply_theme)   # live preview
-        prev_theme = self.data.get("settings", {}).get("theme", "dark")
-        if dlg.exec() == QDialog.Accepted:
-            save_data(self.data)
-            self._update_jira_status_label()
-            self.apply_theme(self.data["settings"].get("theme", "dark"))
-        else:
-            # Revert live preview if cancelled
-            self.apply_theme(prev_theme)
-
-    def apply_theme(self, theme_name):
-        """Switch colour theme and fully rebuild the UI so every widget gets the new colours."""
-        set_theme(theme_name)
-        QApplication.instance().setStyleSheet(build_stylesheet())
-
-        # Save splitter sizes so they survive the rebuild
-        splitter_sizes = None
-        if hasattr(self, '_splitter'):
-            splitter_sizes = self._splitter.sizes()
-
-        # Tear down and rebuild the entire central widget
-        old = self.centralWidget()
-        if old:
-            old.deleteLater()
-
-        self._build_ui()
-        self.refresh_projects()
-        self.refresh_log()
-        self._update_jira_status_label()
-        self._update_tray()
-
-        # Restore splitter position
-        if splitter_sizes and hasattr(self, '_splitter'):
-            self._splitter.setSizes(splitter_sizes)
-
-        # Restore timer display state
-        if self._timer_running:
-            self.timer_lbl.setStyleSheet(f"color: {SUCCESS}; background: transparent; border: none;")
-            self.start_btn.setText("⏹   Stop")
-            self.start_btn.setStyleSheet(f"""
-                QPushButton {{
-                    background-color: {RED}; color: white;
-                    border: none; border-radius: 5px;
-                    padding: 6px 14px; font-size: 13px; font-weight: bold;
-                }}
-                QPushButton:hover {{ background-color: {RED_H}; }}
-            """)
-            self.project_lbl.setStyleSheet(f"color: {SUCCESS}; font-size: 12px; background: transparent; border: none;")
-
-
     def open_jira_settings(self):
-        """Legacy shim — opens the new settings dialog."""
-        self.open_settings()
+        dlg = JiraSettingsDialog(self, self.data["jira"])
+        if dlg.exec() == QDialog.Accepted:
+            result = dlg.get_result()
+            if result:
+                self.data["jira"] = result
+                save_data(self.data)
+                self._update_jira_status_label()
 
     # ── Projects ──────────────────────────────────────────────────────────────
 
@@ -2066,27 +1638,6 @@ class TimeTrackerApp(QMainWindow):
                 sub_row.addWidget(tick_lbl)
             sub_row.addStretch()
             info.addLayout(sub_row)
-
-            # Category tags
-            cats = self.data["category_map"].get(proj, [])
-            if cats:
-                tags_row = QHBoxLayout()
-                tags_row.setSpacing(4)
-                tags_row.setContentsMargins(0, 0, 0, 0)
-                tag_palette = ProjectDialog.TAG_COLORS
-                all_cats    = self.data.get("categories", [])
-                for cat in cats:
-                    idx      = all_cats.index(cat) if cat in all_cats else 0
-                    bg_color = tag_palette[idx % len(tag_palette)]
-                    tag = QLabel(cat)
-                    tag.setStyleSheet(
-                        f"background-color: {bg_color}; color: #ffffff; "
-                        f"font-size: 8px; font-weight: bold; padding: 1px 6px; "
-                        f"border-radius: 3px; border: none;"
-                    )
-                    tags_row.addWidget(tag)
-                tags_row.addStretch()
-                info.addLayout(tags_row)
             rl.addLayout(info, 1)
 
             # Right: action buttons
@@ -2132,8 +1683,7 @@ class TimeTrackerApp(QMainWindow):
             self.proj_layout.insertWidget(i, row)
 
     def add_project(self):
-        dlg = ProjectDialog(self,
-                            all_categories=self.data["categories"])
+        dlg = ProjectDialog(self)
         if dlg.exec() != QDialog.Accepted:
             return
         r = dlg.get_result()
@@ -2146,19 +1696,12 @@ class TimeTrackerApp(QMainWindow):
         self.data["projects"].append(name)
         if ticket:
             self.data["ticket_map"][name] = ticket
-        # Persist any newly-created categories and this project's assignment
-        self.data["categories"] = r["all_categories"]
-        if r["categories"]:
-            self.data["category_map"][name] = r["categories"]
         save_data(self.data)
         self.refresh_projects()
 
     def edit_project(self, name):
-        ticket        = self.data["ticket_map"].get(name, "")
-        assigned_cats = self.data["category_map"].get(name, [])
-        dlg = ProjectDialog(self, name, ticket,
-                            all_categories=self.data["categories"],
-                            assigned_cats=assigned_cats)
+        ticket = self.data["ticket_map"].get(name, "")
+        dlg = ProjectDialog(self, name, ticket)
         if dlg.exec() != QDialog.Accepted:
             return
         r = dlg.get_result()
@@ -2177,8 +1720,6 @@ class TimeTrackerApp(QMainWindow):
                     s["project"] = new_name
             if name in self.data["ticket_map"]:
                 self.data["ticket_map"][new_name] = self.data["ticket_map"].pop(name)
-            if name in self.data["category_map"]:
-                self.data["category_map"][new_name] = self.data["category_map"].pop(name)
             if self._active_project == name:
                 self._active_project = new_name
                 self.project_lbl.setText(new_name)
@@ -2187,13 +1728,6 @@ class TimeTrackerApp(QMainWindow):
             self.data["ticket_map"][new_name] = new_ticket
         else:
             self.data["ticket_map"].pop(new_name, None)
-
-        # Update global category list and this project's assignment
-        self.data["categories"] = r["all_categories"]
-        if r["categories"]:
-            self.data["category_map"][new_name] = r["categories"]
-        else:
-            self.data["category_map"].pop(new_name, None)
 
         save_data(self.data)
         self.refresh_projects()
@@ -2209,9 +1743,8 @@ class TimeTrackerApp(QMainWindow):
                 QMessageBox.Yes | QMessageBox.No) != QMessageBox.Yes:
             return
         self.data["projects"].remove(name)
-        self.data["sessions"]    = [s for s in self.data["sessions"] if s["project"] != name]
+        self.data["sessions"]   = [s for s in self.data["sessions"] if s["project"] != name]
         self.data["ticket_map"].pop(name, None)
-        self.data["category_map"].pop(name, None)
         save_data(self.data)
         if self._active_project == name:
             self._active_project = ""
@@ -2427,14 +1960,12 @@ class TimeTrackerApp(QMainWindow):
         r = dlg.get_result()
         if not r:
             return
-        new_dur  = r["duration"]
-        resync   = r["resync"]
-        new_note = r.get("note", "")
+        new_dur = r["duration"]
+        resync  = r["resync"]
         for s in self.data["sessions"]:
             if s["start"] == session["start"] and s["project"] == session["project"]:
                 s["duration"]  = new_dur
                 s["end"]       = s["start"] + new_dur
-                s["note"]      = new_note
                 if resync and s.get("ticket"):
                     s["jira_sync"] = "pending"
                 break
@@ -2651,7 +2182,7 @@ class TimeTrackerApp(QMainWindow):
                 child.setData(0, Qt.UserRole + 1, s)
                 child.setSizeHint(0, QSize(0, 34))
 
-                row_bg = QColor(SURFACE) if i % 2 == 0 else QColor(ALT_ROW)
+                row_bg = QColor(SURFACE) if i % 2 == 0 else QColor("#1c2440")
                 for col in range(7):
                     child.setBackground(col, row_bg)
                     child.setFont(col, sess_font)
@@ -2825,7 +2356,7 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     app.setApplicationName("TimeTrack")
     app.setOrganizationName("TimeTrack")
-    app.setStyleSheet(build_stylesheet())
+    app.setStyleSheet(APP_STYLESHEET)
     window = TimeTrackerApp()
     window.show()
     sys.exit(app.exec())
