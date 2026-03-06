@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
     QTextEdit, QScrollArea, QFrame, QTreeWidget, QTreeWidgetItem,
     QMessageBox, QSizePolicy, QAbstractItemView, QHeaderView,
     QSpacerItem, QDateEdit, QTimeEdit, QSplitter,
-    QFileDialog, QButtonGroup, QSystemTrayIcon, QMenu
+    QFileDialog, QButtonGroup, QSystemTrayIcon, QMenu, QStackedWidget
 )
 from PySide6.QtCore import Qt, QTimer, Signal, QThread, QDate, QTime, QSize, QPoint
 from PySide6.QtGui import QFont, QColor, QFontDatabase, QPixmap, QPainter, QBrush, QPen, QIcon, QAction
@@ -1656,6 +1656,644 @@ class SettingsDialog(QDialog):
         self.accept()
 
 
+# ── Calendar View ─────────────────────────────────────────────────────────────
+
+class CalendarView(QWidget):
+    """
+    Calendar view with Day / Week / Month modes.
+    Each cell shows which projects were worked on and the per-project time total.
+    """
+
+    _PROJ_COLORS = [
+        "#e94560", "#6a4fc8", "#0a8f6f", "#b06000",
+        "#0052cc", "#7d3c98", "#1e8449", "#1a6b8a",
+        "#c0392b", "#2471a3", "#884ea0", "#17a589",
+    ]
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._sessions   = []
+        self._cur_date   = datetime.now().date()   # anchor date for all modes
+        self._view_mode  = "month"                 # "day" | "week" | "month"
+        self._proj_color = {}
+        self._color_idx  = 0
+        self._setup_ui()
+
+    # ── public API ────────────────────────────────────────────────────────────
+
+    def refresh(self, sessions, category_map=None):
+        self._sessions = sessions
+        self._render()
+
+    # ── UI construction ───────────────────────────────────────────────────────
+
+    def _setup_ui(self):
+        import calendar as _cal
+        self._cal_module = _cal
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(8)
+
+        # ── Top bar: nav left | title | nav right | spacer | mode buttons ─────
+        top_bar = QHBoxLayout()
+        top_bar.setSpacing(6)
+
+        self._prev_btn = QPushButton("‹")
+        self._next_btn = QPushButton("›")
+        for btn in (self._prev_btn, self._next_btn):
+            btn.setFixedSize(30, 30)
+            btn.setCursor(Qt.PointingHandCursor)
+        self._prev_btn.clicked.connect(self._go_prev)
+        self._next_btn.clicked.connect(self._go_next)
+
+        self._title_lbl = QLabel()
+        self._title_lbl.setAlignment(Qt.AlignCenter)
+
+        today_btn = QPushButton("Today")
+        today_btn.setCursor(Qt.PointingHandCursor)
+        today_btn.clicked.connect(self._go_today)
+
+        # Mode toggle buttons
+        self._mode_btns = {}
+        mode_bar = QHBoxLayout()
+        mode_bar.setSpacing(0)
+        for i, (label, key) in enumerate(
+            [("Day", "day"), ("Week", "week"), ("Month", "month")]
+        ):
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.setChecked(key == self._view_mode)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setFixedHeight(28)
+            btn.setMinimumWidth(54)
+            btn.setProperty("mode_key", key)
+            btn.clicked.connect(self._on_mode_btn)
+            self._mode_btns[key] = btn
+            mode_bar.addWidget(btn)
+
+        top_bar.addWidget(self._prev_btn)
+        top_bar.addWidget(self._title_lbl, 1)
+        top_bar.addWidget(self._next_btn)
+        top_bar.addSpacing(10)
+        top_bar.addWidget(today_btn)
+        top_bar.addSpacing(16)
+        top_bar.addLayout(mode_bar)
+        root.addLayout(top_bar)
+
+        # ── DOW header (hidden in day mode) ───────────────────────────────────
+        self._dow_widget = QWidget()
+        self._dow_widget.setStyleSheet("background: transparent;")
+        dow_row = QHBoxLayout(self._dow_widget)
+        dow_row.setContentsMargins(0, 0, 0, 0)
+        dow_row.setSpacing(4)
+        for day_name in ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"):
+            lbl = QLabel(day_name)
+            lbl.setAlignment(Qt.AlignCenter)
+            lbl.setFixedHeight(22)
+            is_we = day_name in ("Sat", "Sun")
+            lbl.setStyleSheet(
+                f"color: {'#e94560' if is_we else TEXT_DIM}; "
+                "font-size: 10px; font-weight: bold; background: transparent;"
+            )
+            dow_row.addWidget(lbl)
+        root.addWidget(self._dow_widget)
+
+        # ── Scroll area + content widget ──────────────────────────────────────
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+
+        self._content = QWidget()
+        self._content.setStyleSheet("background: transparent;")
+        self._content_layout = QVBoxLayout(self._content)
+        self._content_layout.setContentsMargins(0, 0, 0, 0)
+        self._content_layout.setSpacing(0)
+        self._scroll.setWidget(self._content)
+        root.addWidget(self._scroll, 1)
+
+        self._style_nav_buttons()
+        self._style_mode_buttons()
+        self._render()
+
+    # ── Styling helpers ───────────────────────────────────────────────────────
+
+    def _style_nav_buttons(self):
+        for btn in (self._prev_btn, self._next_btn):
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {CARD}; color: {TEXT};
+                    border: 1px solid {BORDER}; border-radius: 6px;
+                    font-size: 18px; font-weight: bold;
+                }}
+                QPushButton:hover {{ background-color: {ACCENT}; color: white; border-color: {ACCENT}; }}
+            """)
+
+    def _style_mode_buttons(self):
+        for key, btn in self._mode_btns.items():
+            active = (key == self._view_mode)
+            if active:
+                btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background-color: {ACCENT}; color: white;
+                        border: 1px solid {ACCENT};
+                        border-radius: 0px; font-size: 11px; font-weight: bold;
+                        padding: 2px 8px;
+                    }}
+                """)
+            else:
+                btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background-color: {CARD}; color: {TEXT_DIM};
+                        border: 1px solid {BORDER};
+                        border-radius: 0px; font-size: 11px;
+                        padding: 2px 8px;
+                    }}
+                    QPushButton:hover {{ background-color: {SURFACE}; color: {TEXT}; }}
+                """)
+        # Round outer corners of first/last
+        keys = list(self._mode_btns.keys())
+        first_btn = self._mode_btns[keys[0]]
+        last_btn  = self._mode_btns[keys[-1]]
+        for btn in (first_btn, last_btn):
+            ss = btn.styleSheet()
+            radius = "border-top-left-radius: 6px; border-bottom-left-radius: 6px;"                      if btn is first_btn else                      "border-top-right-radius: 6px; border-bottom-right-radius: 6px;"
+            btn.setStyleSheet(ss.replace("border-radius: 0px;", radius))
+
+    # ── Navigation ────────────────────────────────────────────────────────────
+
+    def _on_mode_btn(self):
+        key = self.sender().property("mode_key")
+        self._view_mode = key
+        for k, b in self._mode_btns.items():
+            b.setChecked(k == key)
+        self._style_mode_buttons()
+        self._render()
+
+    def _go_prev(self):
+        if self._view_mode == "day":
+            self._cur_date -= timedelta(days=1)
+        elif self._view_mode == "week":
+            self._cur_date -= timedelta(weeks=1)
+        else:
+            # previous month
+            if self._cur_date.month == 1:
+                self._cur_date = self._cur_date.replace(year=self._cur_date.year - 1, month=12, day=1)
+            else:
+                self._cur_date = self._cur_date.replace(month=self._cur_date.month - 1, day=1)
+        self._render()
+
+    def _go_next(self):
+        if self._view_mode == "day":
+            self._cur_date += timedelta(days=1)
+        elif self._view_mode == "week":
+            self._cur_date += timedelta(weeks=1)
+        else:
+            # next month
+            if self._cur_date.month == 12:
+                self._cur_date = self._cur_date.replace(year=self._cur_date.year + 1, month=1, day=1)
+            else:
+                self._cur_date = self._cur_date.replace(month=self._cur_date.month + 1, day=1)
+        self._render()
+
+    def _go_today(self):
+        self._cur_date = datetime.now().date()
+        self._render()
+
+    # ── Data helpers ──────────────────────────────────────────────────────────
+
+    def _proj_bg(self, proj):
+        if proj not in self._proj_color:
+            self._proj_color[proj] = self._PROJ_COLORS[
+                self._color_idx % len(self._PROJ_COLORS)
+            ]
+            self._color_idx += 1
+        return self._proj_color[proj]
+
+    def _sessions_for_date(self, date_str):
+        """Return list of sessions for a specific YYYY-MM-DD string."""
+        return [s for s in self._sessions if s.get("date", "") == date_str]
+
+    def _proj_totals_for_date(self, date_str):
+        """Return {project: total_seconds} for a date string."""
+        totals = {}
+        for s in self._sessions_for_date(date_str):
+            proj = s.get("project", "")
+            totals[proj] = totals.get(proj, 0) + s.get("duration", 0)
+        return totals
+
+    @staticmethod
+    def _fmt_dur(secs):
+        h = int(secs // 3600)
+        m = int((secs % 3600) // 60)
+        return f"{h}h {m:02d}m" if h else f"{m}m"
+
+    # ── Main render dispatcher ────────────────────────────────────────────────
+
+    def _render(self):
+        # Clear content
+        while self._content_layout.count():
+            item = self._content_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+            elif item.layout():
+                # clear nested layouts
+                pass
+
+        if self._view_mode == "day":
+            self._dow_widget.setVisible(False)
+            self._render_day()
+        elif self._view_mode == "week":
+            self._dow_widget.setVisible(True)
+            self._render_week()
+        else:
+            self._dow_widget.setVisible(True)
+            self._render_month()
+
+    # ── Month view ────────────────────────────────────────────────────────────
+
+    def _render_month(self):
+        import calendar as _cal
+        d     = self._cur_date
+        year  = d.year
+        month = d.month
+        self._title_lbl.setStyleSheet(
+            f"color: {TEXT}; font-size: 15px; font-weight: bold; background: transparent;"
+        )
+        self._title_lbl.setText(datetime(year, month, 1).strftime("%B %Y"))
+
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        first_weekday, days_in_month = _cal.monthrange(year, month)
+
+        grid = QWidget()
+        grid.setStyleSheet("background: transparent;")
+        gl = QGridLayout(grid)
+        gl.setSpacing(4)
+        gl.setContentsMargins(0, 0, 0, 0)
+        for col in range(7):
+            gl.setColumnStretch(col, 1)
+
+        row = 0
+        col = first_weekday
+
+        for day_num in range(1, days_in_month + 1):
+            date_str  = f"{year:04d}-{month:02d}-{day_num:02d}"
+            is_today  = (date_str == today_str)
+            proj_data = self._proj_totals_for_date(date_str)
+            cell      = self._make_month_cell(day_num, date_str, is_today, proj_data)
+            gl.addWidget(cell, row, col)
+            col += 1
+            if col == 7:
+                col = 0
+                row += 1
+
+        while col > 0 and col < 7:
+            gl.addWidget(self._make_empty_cell(), row, col)
+            col += 1
+
+        for r in range(row + 1):
+            gl.setRowStretch(r, 1)
+
+        self._content_layout.addWidget(grid, 1)
+
+    def _make_month_cell(self, day_num, date_str, is_today, proj_data):
+        has_data   = bool(proj_data)
+        is_weekend = datetime.strptime(date_str, "%Y-%m-%d").weekday() >= 5
+        border_c   = ACCENT if is_today else BORDER
+        bg_c       = CARD if is_today else (SURFACE if has_data else BG)
+
+        cell = QFrame()
+        cell.setMinimumHeight(70)
+        cell.setStyleSheet(f"QFrame {{ background: {bg_c}; border: 1px solid {border_c}; border-radius: 6px; }}")
+
+        vl = QVBoxLayout(cell)
+        vl.setContentsMargins(5, 4, 5, 4)
+        vl.setSpacing(2)
+
+        num_color = ACCENT if is_today else ("#e94560" if is_weekend else TEXT_DIM)
+        day_lbl = QLabel(str(day_num))
+        day_lbl.setStyleSheet(
+            f"color: {num_color}; font-size: 11px; font-weight: {'bold' if is_today else 'normal'}; "
+            "background: transparent; border: none;"
+        )
+        vl.addWidget(day_lbl)
+
+        for proj, secs in sorted(proj_data.items(), key=lambda x: x[1], reverse=True):
+            row_lay = QHBoxLayout()
+            row_lay.setContentsMargins(0, 0, 0, 0)
+            row_lay.setSpacing(3)
+
+            dot = QLabel("●")
+            dot.setFixedWidth(10)
+            dot.setStyleSheet(f"color: {self._proj_bg(proj)}; font-size: 8px; background: transparent; border: none;")
+
+            name = proj if len(proj) <= 14 else proj[:12] + "…"
+            nl = QLabel(name)
+            nl.setToolTip(proj)
+            nl.setStyleSheet(f"color: {TEXT}; font-size: 9px; background: transparent; border: none;")
+
+            dl = QLabel(self._fmt_dur(secs))
+            dl.setStyleSheet(f"color: {TEXT_DIM}; font-size: 9px; background: transparent; border: none;")
+
+            row_lay.addWidget(dot)
+            row_lay.addWidget(nl, 1)
+            row_lay.addWidget(dl)
+            vl.addLayout(row_lay)
+
+        if proj_data:
+            total = sum(proj_data.values())
+            tl = QLabel(f"Total: {self._fmt_dur(total)}")
+            tl.setStyleSheet(f"color: {SUCCESS}; font-size: 8px; font-weight: bold; background: transparent; border: none;")
+            tl.setAlignment(Qt.AlignRight)
+            vl.addWidget(tl)
+
+        vl.addStretch()
+        return cell
+
+    # ── Week view ─────────────────────────────────────────────────────────────
+
+    def _render_week(self):
+        # Monday of the week containing _cur_date
+        monday    = self._cur_date - timedelta(days=self._cur_date.weekday())
+        sunday    = monday + timedelta(days=6)
+        mon_str   = monday.strftime("%b %-d") if hasattr(monday, 'strftime') else monday.strftime("%b %d").lstrip("0")
+        sun_str   = sunday.strftime("%b %-d") if hasattr(sunday, 'strftime') else sunday.strftime("%b %d").lstrip("0")
+        year_str  = monday.strftime("%Y")
+
+        # Cross-platform date formatting without leading zeros
+        try:
+            mon_str = monday.strftime("%b %-d")
+            sun_str = sunday.strftime("%b %-d")
+        except ValueError:
+            mon_str = monday.strftime("%b %#d")   # Windows
+            sun_str = sunday.strftime("%b %#d")
+
+        self._title_lbl.setStyleSheet(
+            f"color: {TEXT}; font-size: 14px; font-weight: bold; background: transparent;"
+        )
+        self._title_lbl.setText(f"{mon_str} – {sun_str}, {year_str}")
+
+        today_str = datetime.now().strftime("%Y-%m-%d")
+
+        grid = QWidget()
+        grid.setStyleSheet("background: transparent;")
+        gl = QGridLayout(grid)
+        gl.setSpacing(4)
+        gl.setContentsMargins(0, 0, 0, 0)
+        for col in range(7):
+            gl.setColumnStretch(col, 1)
+
+        for offset in range(7):
+            day      = monday + timedelta(days=offset)
+            date_str = day.strftime("%Y-%m-%d")
+            is_today = (date_str == today_str)
+            proj_data = self._proj_totals_for_date(date_str)
+            cell     = self._make_week_cell(day, date_str, is_today, proj_data)
+            gl.addWidget(cell, 0, offset)
+
+        gl.setRowStretch(0, 1)
+        self._content_layout.addWidget(grid, 1)
+
+    def _make_week_cell(self, day, date_str, is_today, proj_data):
+        has_data   = bool(proj_data)
+        is_weekend = day.weekday() >= 5
+        border_c   = ACCENT if is_today else BORDER
+        bg_c       = CARD if is_today else (SURFACE if has_data else BG)
+
+        cell = QFrame()
+        cell.setMinimumHeight(160)
+        cell.setStyleSheet(f"QFrame {{ background: {bg_c}; border: 1px solid {border_c}; border-radius: 6px; }}")
+
+        vl = QVBoxLayout(cell)
+        vl.setContentsMargins(6, 6, 6, 6)
+        vl.setSpacing(4)
+
+        # Date header inside cell
+        try:
+            day_str = day.strftime("%-d")
+        except ValueError:
+            day_str = day.strftime("%#d")
+        num_color = ACCENT if is_today else ("#e94560" if is_weekend else TEXT_DIM)
+        hdr = QLabel(day_str)
+        hdr.setStyleSheet(
+            f"color: {num_color}; font-size: 18px; font-weight: bold; "
+            "background: transparent; border: none;"
+        )
+        vl.addWidget(hdr)
+
+        if not has_data:
+            empty_lbl = QLabel("—")
+            empty_lbl.setStyleSheet(f"color: {BORDER}; font-size: 12px; background: transparent; border: none;")
+            empty_lbl.setAlignment(Qt.AlignCenter)
+            vl.addWidget(empty_lbl, 1, Qt.AlignCenter)
+        else:
+            for proj, secs in sorted(proj_data.items(), key=lambda x: x[1], reverse=True):
+                pill = QFrame()
+                pill.setStyleSheet(f"""
+                    QFrame {{
+                        background: {self._proj_bg(proj)}22;
+                        border: 1px solid {self._proj_bg(proj)}88;
+                        border-radius: 4px;
+                    }}
+                """)
+                pl = QVBoxLayout(pill)
+                pl.setContentsMargins(6, 4, 6, 4)
+                pl.setSpacing(1)
+
+                name = proj if len(proj) <= 16 else proj[:14] + "…"
+                nl = QLabel(name)
+                nl.setToolTip(proj)
+                nl.setStyleSheet(
+                    f"color: {self._proj_bg(proj)}; font-size: 10px; font-weight: bold; "
+                    "background: transparent; border: none;"
+                )
+
+                dl = QLabel(self._fmt_dur(secs))
+                dl.setStyleSheet(f"color: {TEXT_DIM}; font-size: 10px; background: transparent; border: none;")
+
+                pl.addWidget(nl)
+                pl.addWidget(dl)
+                vl.addWidget(pill)
+
+            total = sum(proj_data.values())
+            sep = QFrame()
+            sep.setFrameShape(QFrame.HLine)
+            sep.setStyleSheet(f"color: {BORDER}; background: {BORDER}; border: none; max-height: 1px;")
+            vl.addWidget(sep)
+            tl = QLabel(f"Total  {self._fmt_dur(total)}")
+            tl.setStyleSheet(
+                f"color: {SUCCESS}; font-size: 10px; font-weight: bold; "
+                "background: transparent; border: none;"
+            )
+            vl.addWidget(tl)
+
+        vl.addStretch()
+        return cell
+
+    # ── Day view ──────────────────────────────────────────────────────────────
+
+    def _render_day(self):
+        d        = self._cur_date
+        date_str = d.strftime("%Y-%m-%d")
+        today    = datetime.now().date()
+
+        try:
+            day_fmt = d.strftime("%A, %B %-d %Y")
+        except ValueError:
+            day_fmt = d.strftime("%A, %B %#d %Y")
+
+        suffix = " — Today" if d == today else (" — Yesterday" if (today - d).days == 1 else "")
+        self._title_lbl.setStyleSheet(
+            f"color: {TEXT}; font-size: 14px; font-weight: bold; background: transparent;"
+        )
+        self._title_lbl.setText(day_fmt + suffix)
+
+        sessions = sorted(self._sessions_for_date(date_str), key=lambda s: s.get("start", 0))
+
+        wrapper = QWidget()
+        wrapper.setStyleSheet("background: transparent;")
+        wl = QVBoxLayout(wrapper)
+        wl.setContentsMargins(0, 0, 0, 0)
+        wl.setSpacing(8)
+
+        if not sessions:
+            # Empty state
+            empty = QFrame()
+            empty.setStyleSheet(f"QFrame {{ background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 8px; }}")
+            el = QVBoxLayout(empty)
+            el.setContentsMargins(24, 32, 24, 32)
+            lbl = QLabel("No sessions recorded for this day.")
+            lbl.setAlignment(Qt.AlignCenter)
+            lbl.setStyleSheet(f"color: {TEXT_DIM}; font-size: 13px; background: transparent; border: none;")
+            el.addWidget(lbl)
+            wl.addWidget(empty)
+            wl.addStretch()
+            self._content_layout.addWidget(wrapper, 1)
+            return
+
+        # Summary bar at top
+        proj_totals = self._proj_totals_for_date(date_str)
+        day_total   = sum(proj_totals.values())
+
+        summary = QFrame()
+        summary.setStyleSheet(f"QFrame {{ background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 8px; }}")
+        sl = QHBoxLayout(summary)
+        sl.setContentsMargins(16, 10, 16, 10)
+        sl.setSpacing(20)
+
+        total_lbl = QLabel(f"Total: {self._fmt_dur(day_total)}")
+        total_lbl.setStyleSheet(f"color: {SUCCESS}; font-size: 14px; font-weight: bold; background: transparent; border: none;")
+        sl.addWidget(total_lbl)
+
+        for proj, secs in sorted(proj_totals.items(), key=lambda x: x[1], reverse=True):
+            dot = QLabel(f"● {proj}  {self._fmt_dur(secs)}")
+            dot.setStyleSheet(
+                f"color: {self._proj_bg(proj)}; font-size: 11px; font-weight: bold; "
+                "background: transparent; border: none;"
+            )
+            dot.setToolTip(proj)
+            sl.addWidget(dot)
+        sl.addStretch()
+        wl.addWidget(summary)
+
+        # Individual session cards
+        for s in sessions:
+            proj     = s.get("project", "")
+            dur      = s.get("duration", 0)
+            note     = s.get("note", "")
+            ticket   = s.get("ticket", "")
+            manual   = s.get("manual", False)
+            sync_st  = s.get("jira_sync", "none")
+            start_ts = s.get("start", 0)
+            end_ts   = s.get("end", 0)
+
+            start_t = datetime.fromtimestamp(start_ts).strftime("%H:%M") if start_ts else ""
+            end_t   = datetime.fromtimestamp(end_ts).strftime("%H:%M")   if end_ts   else ""
+            bg_col  = self._proj_bg(proj)
+
+            card = QFrame()
+            card.setStyleSheet(f"""
+                QFrame {{
+                    background: {bg_col}18;
+                    border: 1px solid {bg_col}55;
+                    border-left: 4px solid {bg_col};
+                    border-radius: 6px;
+                }}
+            """)
+            cl = QHBoxLayout(card)
+            cl.setContentsMargins(12, 10, 12, 10)
+            cl.setSpacing(16)
+
+            # Left: time range column
+            time_col = QVBoxLayout()
+            time_col.setSpacing(2)
+            time_lbl = QLabel(f"{start_t}")
+            time_lbl.setStyleSheet(f"color: {TEXT}; font-size: 12px; font-weight: bold; background: transparent; border: none;")
+            end_lbl  = QLabel(f"{end_t}")
+            end_lbl.setStyleSheet(f"color: {TEXT_DIM}; font-size: 11px; background: transparent; border: none;")
+            time_col.addWidget(time_lbl)
+            time_col.addWidget(end_lbl)
+            cl.addLayout(time_col)
+
+            # Divider
+            div = QFrame()
+            div.setFrameShape(QFrame.VLine)
+            div.setStyleSheet(f"color: {bg_col}55; background: {bg_col}55; border: none; max-width: 1px;")
+            cl.addWidget(div)
+
+            # Middle: project + note
+            info_col = QVBoxLayout()
+            info_col.setSpacing(2)
+            proj_lbl = QLabel(proj)
+            proj_lbl.setStyleSheet(
+                f"color: {bg_col}; font-size: 13px; font-weight: bold; background: transparent; border: none;"
+            )
+            info_col.addWidget(proj_lbl)
+            badges = QHBoxLayout()
+            badges.setSpacing(6)
+            if ticket:
+                t_lbl = QLabel(f"🔗 {ticket}")
+                t_lbl.setStyleSheet(f"color: {JIRA_BLUE}; font-size: 10px; background: transparent; border: none;")
+                badges.addWidget(t_lbl)
+            if manual:
+                m_lbl = QLabel("✏ manual")
+                m_lbl.setStyleSheet(f"color: {TEXT_DIM}; font-size: 10px; background: transparent; border: none;")
+                badges.addWidget(m_lbl)
+            if sync_st == "synced":
+                j_lbl = QLabel("✔ Jira")
+                j_lbl.setStyleSheet(f"color: {SUCCESS}; font-size: 10px; background: transparent; border: none;")
+                badges.addWidget(j_lbl)
+            badges.addStretch()
+            info_col.addLayout(badges)
+            if note:
+                note_lbl = QLabel(note)
+                note_lbl.setWordWrap(True)
+                note_lbl.setStyleSheet(f"color: {TEXT_DIM}; font-size: 11px; background: transparent; border: none;")
+                info_col.addWidget(note_lbl)
+            cl.addLayout(info_col, 1)
+
+            # Right: duration
+            dur_lbl = QLabel(self._fmt_dur(dur))
+            dur_lbl.setStyleSheet(
+                f"color: {TEXT}; font-size: 15px; font-weight: bold; background: transparent; border: none;"
+            )
+            dur_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            cl.addWidget(dur_lbl)
+
+            wl.addWidget(card)
+
+        wl.addStretch()
+        self._content_layout.addWidget(wrapper, 1)
+
+    # ── Shared helpers ────────────────────────────────────────────────────────
+
+    def _make_empty_cell(self):
+        f = QFrame()
+        f.setStyleSheet("background: transparent; border: none;")
+        return f
+
+
 # ── Main Window ───────────────────────────────────────────────────────────────
 
 class TimeTrackerApp(QMainWindow):
@@ -1859,9 +2497,9 @@ class TimeTrackerApp(QMainWindow):
         # ── Stat cards (customizable) ─────────────────────────────────────────
         stats_row = QHBoxLayout()
         stats_row.setSpacing(10)
-        self.stat_title_labels = []   # QLabel for the window title
-        self.stat_value_labels = []   # QLabel for the time value
-        self.stat_cards        = []   # QFrame cards
+        self.stat_title_labels = []
+        self.stat_value_labels = []
+        self.stat_cards        = []
         for slot_idx, color in enumerate(get_stat_colors()):
             card = card_frame(SURFACE)
             card.setProperty("slot_idx", slot_idx)
@@ -1870,7 +2508,6 @@ class TimeTrackerApp(QMainWindow):
             cl = QVBoxLayout(card)
             cl.setContentsMargins(14, 8, 14, 10)
             cl.setSpacing(1)
-            # Title row with small ▾ indicator
             tr = QHBoxLayout(); tr.setContentsMargins(0,0,0,0); tr.setSpacing(4)
             tl = QLabel()
             tl.setStyleSheet(f"color: {TEXT_DIM}; font-size: 9px; font-weight: bold; background: transparent; border: none;")
@@ -1887,25 +2524,55 @@ class TimeTrackerApp(QMainWindow):
             stats_row.addWidget(card)
         layout.addLayout(stats_row)
 
-        # ── Log header ────────────────────────────────────────────────────────
-        log_hdr = QHBoxLayout()
-        log_hdr.setContentsMargins(0, 0, 0, 0)
-        log_title = section_label("SESSION LOG")
-        log_hdr.addWidget(log_title)
-        hint = dim_label("Click project to expand  •  Double-click session to edit", 9)
-        log_hdr.addWidget(hint)
-        log_hdr.addStretch()
-        expand_btn  = styled_btn("Expand All",   CARD, BORDER, TEXT_DIM, 9, False)
-        collapse_btn= styled_btn("Collapse All", CARD, BORDER, TEXT_DIM, 9, False)
-        clear_btn   = styled_btn("Clear All",    GREY, GREY_H,    "#ffffff", 9)
+        # ── View toggle header ────────────────────────────────────────────────
+        view_hdr = QHBoxLayout()
+        view_hdr.setContentsMargins(0, 0, 0, 0)
+        view_hdr.setSpacing(0)
+
+        self._log_tab_btn = QPushButton("  Session Log  ")
+        self._cal_tab_btn = QPushButton("  Calendar  ")
+        for btn in (self._log_tab_btn, self._cal_tab_btn):
+            btn.setCheckable(True)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setFixedHeight(30)
+        self._log_tab_btn.setChecked(True)
+        self._log_tab_btn.clicked.connect(lambda: self._switch_view(0))
+        self._cal_tab_btn.clicked.connect(lambda: self._switch_view(1))
+        self._style_view_tabs()
+
+        view_hdr.addWidget(self._log_tab_btn)
+        view_hdr.addWidget(self._cal_tab_btn)
+        view_hdr.addStretch()
+
+        # Log-specific controls (hidden when calendar is active)
+        self._log_controls = QWidget()
+        self._log_controls.setStyleSheet("background: transparent;")
+        lc_lay = QHBoxLayout(self._log_controls)
+        lc_lay.setContentsMargins(0, 0, 0, 0)
+        lc_lay.setSpacing(4)
+        hint = dim_label("Double-click to edit  •  Right-click to delete", 9)
+        lc_lay.addWidget(hint)
+        expand_btn   = styled_btn("Expand All",   CARD, BORDER, TEXT_DIM, 9, False)
+        collapse_btn = styled_btn("Collapse All", CARD, BORDER, TEXT_DIM, 9, False)
+        clear_btn    = styled_btn("Clear All",    GREY, GREY_H, "#ffffff", 9)
         expand_btn.clicked.connect(self.expand_all)
         collapse_btn.clicked.connect(self.collapse_all)
         clear_btn.clicked.connect(self.clear_log)
         for b in (expand_btn, collapse_btn, clear_btn):
-            log_hdr.addWidget(b)
-        layout.addLayout(log_hdr)
+            lc_lay.addWidget(b)
+        view_hdr.addWidget(self._log_controls)
+        layout.addLayout(view_hdr)
 
-        # ── Tree widget ───────────────────────────────────────────────────────
+        # ── Stacked widget: page 0 = log, page 1 = calendar ──────────────────
+        self._view_stack = QStackedWidget()
+        self._view_stack.setStyleSheet("background: transparent;")
+
+        # Page 0: session log tree
+        log_page = QWidget()
+        log_page.setStyleSheet("background: transparent;")
+        log_lay = QVBoxLayout(log_page)
+        log_lay.setContentsMargins(0, 0, 0, 0)
+
         tree_frame = QFrame()
         tree_frame.setStyleSheet(f"QFrame {{ background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 8px; }}")
         tf_layout = QVBoxLayout(tree_frame)
@@ -1920,7 +2587,6 @@ class TimeTrackerApp(QMainWindow):
         self.tree.setIndentation(18)
         self.tree.setAnimated(True)
         self.tree.setUniformRowHeights(False)
-
         self.tree.header().setSectionResizeMode(0, QHeaderView.Interactive)
         self.tree.header().setSectionResizeMode(1, QHeaderView.Fixed)
         self.tree.header().setSectionResizeMode(2, QHeaderView.Fixed)
@@ -1934,7 +2600,6 @@ class TimeTrackerApp(QMainWindow):
         self.tree.setColumnWidth(3, 65)
         self.tree.setColumnWidth(4, 90)
         self.tree.setColumnWidth(5, 95)
-
         self.tree.itemDoubleClicked.connect(self._on_item_double_clicked)
         self.tree.itemExpanded.connect(self._on_item_expanded)
         self.tree.itemCollapsed.connect(self._on_item_collapsed)
@@ -1942,7 +2607,50 @@ class TimeTrackerApp(QMainWindow):
         self.tree.customContextMenuRequested.connect(self._on_tree_context_menu)
 
         tf_layout.addWidget(self.tree)
-        layout.addWidget(tree_frame, 1)
+        log_lay.addWidget(tree_frame, 1)
+        self._view_stack.addWidget(log_page)
+
+        # Page 1: calendar
+        self._calendar = CalendarView()
+        self._view_stack.addWidget(self._calendar)
+
+        layout.addWidget(self._view_stack, 1)
+
+    def _style_view_tabs(self):
+        """Style the Log / Calendar toggle buttons to reflect which is active."""
+        for btn, is_active in (
+            (self._log_tab_btn, self._view_stack.currentIndex() == 0 if hasattr(self, '_view_stack') else True),
+            (self._cal_tab_btn, self._view_stack.currentIndex() == 1 if hasattr(self, '_view_stack') else False),
+        ):
+            if is_active and btn.isChecked():
+                btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background-color: {SURFACE}; color: {TEXT};
+                        border: 1px solid {BORDER}; border-bottom: 2px solid {ACCENT};
+                        border-radius: 0px; font-size: 11px; font-weight: bold;
+                        padding: 0 12px;
+                    }}
+                """)
+            else:
+                btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background-color: transparent; color: {TEXT_DIM};
+                        border: none; border-bottom: 2px solid transparent;
+                        border-radius: 0px; font-size: 11px;
+                        padding: 0 12px;
+                    }}
+                    QPushButton:hover {{ color: {TEXT}; border-bottom: 2px solid {BORDER}; }}
+                """)
+
+    def _switch_view(self, index):
+        """Switch between log (0) and calendar (1)."""
+        self._view_stack.setCurrentIndex(index)
+        self._log_tab_btn.setChecked(index == 0)
+        self._cal_tab_btn.setChecked(index == 1)
+        self._log_controls.setVisible(index == 0)
+        self._style_view_tabs()
+        if index == 1:
+            self.refresh_calendar()
 
     # ── Jira ──────────────────────────────────────────────────────────────────
 
@@ -1973,10 +2681,9 @@ class TimeTrackerApp(QMainWindow):
         set_theme(theme_name)
         QApplication.instance().setStyleSheet(build_stylesheet())
 
-        # Save splitter sizes so they survive the rebuild
-        splitter_sizes = None
-        if hasattr(self, '_splitter'):
-            splitter_sizes = self._splitter.sizes()
+        # Save splitter sizes and active view so they survive the rebuild
+        splitter_sizes  = self._splitter.sizes() if hasattr(self, '_splitter') else None
+        active_view_idx = self._view_stack.currentIndex() if hasattr(self, '_view_stack') else 0
 
         # Tear down and rebuild the entire central widget
         old = self.centralWidget()
@@ -1992,6 +2699,10 @@ class TimeTrackerApp(QMainWindow):
         # Restore splitter position
         if splitter_sizes and hasattr(self, '_splitter'):
             self._splitter.setSizes(splitter_sizes)
+
+        # Restore active view (log vs calendar)
+        if active_view_idx == 1:
+            self._switch_view(1)
 
         # Restore timer display state
         if self._timer_running:
@@ -2660,6 +3371,7 @@ class TimeTrackerApp(QMainWindow):
                 child.setForeground(6, QColor(TEXT_DIM))
 
         self.refresh_stats()
+        self.refresh_calendar()
 
     def refresh_stats(self):
         sessions = self.data["sessions"]
@@ -2669,6 +3381,13 @@ class TimeTrackerApp(QMainWindow):
             self.stat_title_labels[i].setText(label.upper())
             self.stat_value_labels[i].setText(fmt_duration(fn(sessions)))
 
+
+    def refresh_calendar(self):
+        if hasattr(self, "_calendar"):
+            self._calendar.refresh(
+                self.data.get("sessions", []),
+                self.data.get("category_map", {}),
+            )
     def eventFilter(self, obj, event):
         from PySide6.QtCore import QEvent
         if event.type() == QEvent.MouseButtonPress and obj in self.stat_cards:
