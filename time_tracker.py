@@ -189,7 +189,8 @@ def load_data():
             pass
     return {"projects": [], "sessions": [],
             "jira": {"url": "", "email": "", "token": ""},
-            "ticket_map": {}, "categories": [], "category_map": {}}
+            "ticket_map": {}, "categories": [], "category_map": {},
+            "archived_projects": []}
 
 def save_data(data):
     with open(DATA_FILE, "w") as f:
@@ -459,6 +460,39 @@ class JiraDeleteWorker(QThread):
     def run(self):
         ok, err = jira_delete_worklog(self._cfg, self._ticket, self._worklog_id)
         self.done.emit(ok, err or "")
+
+
+class JiraAutoArchiveWorker(QThread):
+    """
+    Checks the Jira status of every project that has a ticket key.
+    Emits a list of project names that should be auto-archived because their
+    ticket is in a terminal state (Done / Closed / Resolved / Won't Do).
+    """
+    done = Signal(list, str)   # (projects_to_archive, error_or_empty)
+
+    TERMINAL_STATUSES = {"done", "closed", "resolved", "won't do", "wont do",
+                         "complete", "completed", "cancelled", "canceled"}
+
+    def __init__(self, jira_cfg, ticket_map):
+        super().__init__()
+        self._cfg        = jira_cfg
+        self._ticket_map = dict(ticket_map)   # {project: ticket_key}
+
+    def run(self):
+        to_archive = []
+        errors     = []
+        for proj, ticket in self._ticket_map.items():
+            if not ticket:
+                continue
+            issue, err = jira_get_issue(self._cfg, ticket)
+            if err:
+                errors.append(f"{ticket}: {err}")
+                continue
+            status = (issue.get("status") or "").strip().lower()
+            if status in self.TERMINAL_STATUSES:
+                to_archive.append(proj)
+        err_msg = "\n".join(errors) if errors else ""
+        self.done.emit(to_archive, err_msg)
 
 
 # ── Spinbox trio helper ───────────────────────────────────────────────────────
@@ -2308,6 +2342,8 @@ class TimeTrackerApp(QMainWindow):
         self.data.setdefault("ticket_map", {})
         self.data.setdefault("categories", [])
         self.data.setdefault("category_map", {})
+        self.data.setdefault("archived_projects", [])
+        self._archive_worker = None   # JiraAutoArchiveWorker ref
         self.data.setdefault("stat_configs", list(DEFAULT_STAT_CONFIGS))
         self.data.setdefault("settings", {"theme": "dark"})
         while len(self.data["stat_configs"]) < 3:
@@ -2332,6 +2368,9 @@ class TimeTrackerApp(QMainWindow):
         self._tick_timer = QTimer(self)
         self._tick_timer.timeout.connect(self._tick)
         self._tick_timer.start(500)
+
+        # Run Jira auto-archive check 3 seconds after startup (non-blocking)
+        QTimer.singleShot(3000, self._run_jira_auto_archive)
 
     # ── UI Construction ───────────────────────────────────────────────────────
 
@@ -2459,35 +2498,105 @@ class TimeTrackerApp(QMainWindow):
 
         layout.addWidget(timer_card)
 
-        # ── Projects header ───────────────────────────────────────────────────
+        # ── Projects header with tab bar ──────────────────────────────────────
         ph = QHBoxLayout()
         ph.setContentsMargins(0, 0, 0, 0)
-        proj_hdr = section_label("PROJECTS")
-        ph.addWidget(proj_hdr)
+        ph.setSpacing(0)
+
+        # Active / Archived toggle tabs
+        self._proj_tab_active   = QPushButton("Active")
+        self._proj_tab_archived = QPushButton("Archived")
+        for btn in (self._proj_tab_active, self._proj_tab_archived):
+            btn.setCheckable(True)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setFixedHeight(26)
+            btn.setMinimumWidth(60)
+        self._proj_tab_active.setChecked(True)
+        self._proj_tab_active.clicked.connect(lambda: self._switch_proj_tab("active"))
+        self._proj_tab_archived.clicked.connect(lambda: self._switch_proj_tab("archived"))
+        self._proj_tab = "active"
+        self._style_proj_tabs()
+
+        ph.addWidget(self._proj_tab_active)
+        ph.addWidget(self._proj_tab_archived)
         ph.addStretch()
-        add_btn = styled_btn("+ Add Project", BLUE, BLUE_H, font_size=10)
-        add_btn.clicked.connect(self.add_project)
-        ph.addWidget(add_btn)
+
+        # Right side: add button (hidden in archived tab) + Jira check button
+        self._add_proj_btn = styled_btn("+ Add", BLUE, BLUE_H, font_size=10)
+        self._add_proj_btn.clicked.connect(self.add_project)
+
+        self._jira_check_btn = styled_btn("⟳ Jira", CARD, SURFACE, TEXT_DIM, font_size=9)
+        self._jira_check_btn.setToolTip(
+            "Check Jira ticket statuses and auto-archive any projects\n"
+            "whose ticket is Done, Closed, or Resolved."
+        )
+        self._jira_check_btn.clicked.connect(self._run_jira_auto_archive)
+
+        ph.addWidget(self._add_proj_btn)
+        ph.addSpacing(4)
+        ph.addWidget(self._jira_check_btn)
         layout.addLayout(ph)
 
-        # ── Projects scroll area ──────────────────────────────────────────────
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        scroll.setStyleSheet(f"""
-            QScrollArea {{ background-color: {SURFACE}; border: 1px solid {BORDER}; border-radius: 8px; }}
-            QScrollArea > QWidget > QWidget {{ background-color: {SURFACE}; }}
-        """)
+        # ── Stacked scroll areas (active / archived) ──────────────────────────
+        self._proj_stack = QStackedWidget()
+        self._proj_stack.setStyleSheet("background: transparent;")
 
-        self.proj_container = QWidget()
-        self.proj_container.setStyleSheet(f"background-color: {SURFACE};")
-        self.proj_layout = QVBoxLayout(self.proj_container)
-        self.proj_layout.setContentsMargins(6, 6, 6, 6)
-        self.proj_layout.setSpacing(4)
-        self.proj_layout.addStretch()
+        # Page 0: active projects
+        def _make_scroll_page():
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            scroll.setStyleSheet(f"""
+                QScrollArea {{ background-color: {SURFACE}; border: 1px solid {BORDER}; border-radius: 8px; }}
+                QScrollArea > QWidget > QWidget {{ background-color: {SURFACE}; }}
+            """)
+            container = QWidget()
+            container.setStyleSheet(f"background-color: {SURFACE};")
+            vbox = QVBoxLayout(container)
+            vbox.setContentsMargins(6, 6, 6, 6)
+            vbox.setSpacing(4)
+            vbox.addStretch()
+            scroll.setWidget(container)
+            return scroll, vbox
 
-        scroll.setWidget(self.proj_container)
-        layout.addWidget(scroll, 1)
+        active_scroll, self.proj_layout = _make_scroll_page()
+        archived_scroll, self.archived_proj_layout = _make_scroll_page()
+
+        self._proj_stack.addWidget(active_scroll)
+        self._proj_stack.addWidget(archived_scroll)
+        layout.addWidget(self._proj_stack, 1)
+
+    def _style_proj_tabs(self):
+        for btn, key in (
+            (self._proj_tab_active,   "active"),
+            (self._proj_tab_archived, "archived"),
+        ):
+            active = (key == self._proj_tab)
+            if active:
+                btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background-color: {SURFACE}; color: {TEXT};
+                        border: 1px solid {BORDER}; border-bottom: 2px solid {ACCENT};
+                        border-radius: 0px; font-size: 10px; font-weight: bold; padding: 0 10px;
+                    }}
+                """)
+            else:
+                btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background-color: transparent; color: {TEXT_DIM};
+                        border: none; border-bottom: 2px solid transparent;
+                        border-radius: 0px; font-size: 10px; padding: 0 10px;
+                    }}
+                    QPushButton:hover {{ color: {TEXT}; border-bottom: 2px solid {BORDER}; }}
+                """)
+
+    def _switch_proj_tab(self, tab):
+        self._proj_tab = tab
+        self._proj_tab_active.setChecked(tab == "active")
+        self._proj_tab_archived.setChecked(tab == "archived")
+        self._proj_stack.setCurrentIndex(0 if tab == "active" else 1)
+        self._add_proj_btn.setVisible(tab == "active")
+        self._style_proj_tabs()
 
     def _build_right(self, parent):
         layout = QVBoxLayout(parent)
@@ -2684,6 +2793,7 @@ class TimeTrackerApp(QMainWindow):
         # Save splitter sizes and active view so they survive the rebuild
         splitter_sizes  = self._splitter.sizes() if hasattr(self, '_splitter') else None
         active_view_idx = self._view_stack.currentIndex() if hasattr(self, '_view_stack') else 0
+        active_proj_tab = getattr(self, '_proj_tab', 'active')
 
         # Tear down and rebuild the entire central widget
         old = self.centralWidget()
@@ -2703,6 +2813,10 @@ class TimeTrackerApp(QMainWindow):
         # Restore active view (log vs calendar)
         if active_view_idx == 1:
             self._switch_view(1)
+
+        # Restore project tab (active vs archived)
+        if active_proj_tab == "archived":
+            self._switch_proj_tab("archived")
 
         # Restore timer display state
         if self._timer_running:
@@ -2726,59 +2840,182 @@ class TimeTrackerApp(QMainWindow):
     # ── Projects ──────────────────────────────────────────────────────────────
 
     def refresh_projects(self):
-        # Remove all existing project rows (leave the stretch at end)
+        # ── Active tab ────────────────────────────────────────────────────────
         while self.proj_layout.count() > 1:
             item = self.proj_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
 
         if not self.data["projects"]:
-            empty = QLabel("No projects yet.\nClick + to add one.")
+            empty = QLabel("No projects yet.\nClick + Add to create one.")
             empty.setAlignment(Qt.AlignCenter)
             empty.setStyleSheet(f"color: {TEXT_DIM}; font-size: 12px; background: transparent;")
             self.proj_layout.insertWidget(0, empty)
+        else:
+            for i, proj in enumerate(self.data["projects"]):
+                total     = total_seconds_for_project(self.data["sessions"], proj)
+                is_active = (proj == self._active_project and self._timer_running)
+                ticket    = self.data["ticket_map"].get(proj, "")
+                bg        = ACCENT2 if is_active else CARD
+                border_c  = ACCENT if is_active else BORDER
+
+                row = QFrame()
+                row.setStyleSheet(f"""
+                    QFrame {{
+                        background-color: {bg};
+                        border: 1px solid {border_c};
+                        border-radius: 7px;
+                    }}
+                """)
+                rl = QHBoxLayout(row)
+                rl.setContentsMargins(10, 8, 8, 8)
+                rl.setSpacing(8)
+
+                info = QVBoxLayout()
+                info.setSpacing(2)
+                dot = "🟢 " if is_active else "⚪ "
+                name_lbl = QLabel(dot + proj)
+                name_lbl.setStyleSheet(f"color: {TEXT}; font-size: 12px; font-weight: bold; background: transparent; border: none;")
+                info.addWidget(name_lbl)
+
+                sub_row = QHBoxLayout()
+                sub_row.setSpacing(8)
+                time_lbl = QLabel(fmt_duration(total))
+                time_lbl.setStyleSheet(f"color: {SUCCESS if is_active else TEXT_DIM}; font-size: 10px; background: transparent; border: none;")
+                sub_row.addWidget(time_lbl)
+                if ticket:
+                    tick_lbl = QLabel(f"🔗 {ticket}")
+                    tick_lbl.setStyleSheet(f"color: {JIRA_BLUE}; font-size: 9px; background: transparent; border: none;")
+                    sub_row.addWidget(tick_lbl)
+                sub_row.addStretch()
+                info.addLayout(sub_row)
+
+                cats = self.data["category_map"].get(proj, [])
+                if cats:
+                    tags_row = QHBoxLayout()
+                    tags_row.setSpacing(4)
+                    tags_row.setContentsMargins(0, 0, 0, 0)
+                    tag_palette = ProjectDialog.TAG_COLORS
+                    all_cats    = self.data.get("categories", [])
+                    for cat in cats:
+                        idx      = all_cats.index(cat) if cat in all_cats else 0
+                        bg_color = tag_palette[idx % len(tag_palette)]
+                        tag = QLabel(cat)
+                        tag.setStyleSheet(
+                            f"background-color: {bg_color}; color: #ffffff; "
+                            f"font-size: 8px; font-weight: bold; padding: 1px 6px; "
+                            f"border-radius: 3px; border: none;"
+                        )
+                        tags_row.addWidget(tag)
+                    tags_row.addStretch()
+                    info.addLayout(tags_row)
+                rl.addLayout(info, 1)
+
+                btns = QHBoxLayout()
+                btns.setSpacing(3)
+
+                def _small_btn(text, color, hover, tc="#ffffff"):
+                    b = QPushButton(text)
+                    b.setStyleSheet(f"""
+                        QPushButton {{
+                            background-color: {color}; color: {tc};
+                            border: none; border-radius: 4px;
+                            padding: 3px 7px; font-size: 11px; font-weight: bold;
+                        }}
+                        QPushButton:hover {{ background-color: {hover}; }}
+                    """)
+                    b.setCursor(Qt.PointingHandCursor)
+                    b.setFixedHeight(26)
+                    return b
+
+                sel = _small_btn("▶", GREEN, GREEN_H, "#0a0a0a")
+                sel.clicked.connect(lambda checked=False, p=proj: self.select_project(p))
+                btns.addWidget(sel)
+
+                add_e = _small_btn("⊕", PURPLE, PURPLE_H)
+                add_e.clicked.connect(lambda checked=False, p=proj: self.add_manual_entry(p))
+                btns.addWidget(add_e)
+
+                if ticket:
+                    info_b = _small_btn("ℹ", BLUE, BLUE_H)
+                    info_b.clicked.connect(lambda checked=False, p=proj, t=ticket: self.open_jira_info(p, t))
+                    btns.addWidget(info_b)
+
+                edit_b = _small_btn("✎", JIRA_BLUE, "#0065ff")
+                edit_b.clicked.connect(lambda checked=False, p=proj: self.edit_project(p))
+                btns.addWidget(edit_b)
+
+                arc_b = _small_btn("⊟", WARNING, "#c8a000", "#0a0a0a")
+                arc_b.setToolTip("Archive this project")
+                arc_b.clicked.connect(lambda checked=False, p=proj: self.archive_project(p))
+                btns.addWidget(arc_b)
+
+                del_b = _small_btn("✕", RED, RED_H)
+                del_b.clicked.connect(lambda checked=False, p=proj: self.delete_project(p))
+                btns.addWidget(del_b)
+
+                rl.addLayout(btns)
+                self.proj_layout.insertWidget(i, row)
+
+        # ── Archived tab ──────────────────────────────────────────────────────
+        self._refresh_archived()
+
+        # Keep tab button counts up to date
+        n_arch = len(self.data.get("archived_projects", []))
+        arch_label = f"Archived ({n_arch})" if n_arch else "Archived"
+        self._proj_tab_archived.setText(arch_label)
+
+    def _refresh_archived(self):
+        """Rebuild the archived projects list."""
+        while self.archived_proj_layout.count() > 1:
+            item = self.archived_proj_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        archived = self.data.get("archived_projects", [])
+        if not archived:
+            empty = QLabel("No archived projects.")
+            empty.setAlignment(Qt.AlignCenter)
+            empty.setStyleSheet(f"color: {TEXT_DIM}; font-size: 12px; background: transparent;")
+            self.archived_proj_layout.insertWidget(0, empty)
             return
 
-        for i, proj in enumerate(self.data["projects"]):
-            total     = total_seconds_for_project(self.data["sessions"], proj)
-            is_active = (proj == self._active_project and self._timer_running)
-            ticket    = self.data["ticket_map"].get(proj, "")
-            bg        = ACCENT2 if is_active else CARD
-            border_c  = ACCENT if is_active else BORDER
+        for i, proj in enumerate(archived):
+            total  = total_seconds_for_project(self.data["sessions"], proj)
+            ticket = self.data["ticket_map"].get(proj, "")
 
             row = QFrame()
             row.setStyleSheet(f"""
                 QFrame {{
-                    background-color: {bg};
-                    border: 1px solid {border_c};
+                    background-color: {BG};
+                    border: 1px solid {BORDER};
                     border-radius: 7px;
+                    opacity: 0.8;
                 }}
             """)
             rl = QHBoxLayout(row)
             rl.setContentsMargins(10, 8, 8, 8)
             rl.setSpacing(8)
 
-            # Left: name + time + ticket
             info = QVBoxLayout()
             info.setSpacing(2)
-            dot = "🟢 " if is_active else "⚪ "
-            name_lbl = QLabel(dot + proj)
-            name_lbl.setStyleSheet(f"color: {TEXT}; font-size: 12px; font-weight: bold; background: transparent; border: none;")
+
+            name_lbl = QLabel("📦 " + proj)
+            name_lbl.setStyleSheet(f"color: {TEXT_DIM}; font-size: 12px; font-weight: bold; background: transparent; border: none;")
             info.addWidget(name_lbl)
 
             sub_row = QHBoxLayout()
             sub_row.setSpacing(8)
             time_lbl = QLabel(fmt_duration(total))
-            time_lbl.setStyleSheet(f"color: {SUCCESS if is_active else TEXT_DIM}; font-size: 10px; background: transparent; border: none;")
+            time_lbl.setStyleSheet(f"color: {TEXT_DIM}; font-size: 10px; background: transparent; border: none;")
             sub_row.addWidget(time_lbl)
             if ticket:
                 tick_lbl = QLabel(f"🔗 {ticket}")
-                tick_lbl.setStyleSheet(f"color: {JIRA_BLUE}; font-size: 9px; background: transparent; border: none;")
+                tick_lbl.setStyleSheet(f"color: {TEXT_DIM}; font-size: 9px; background: transparent; border: none;")
                 sub_row.addWidget(tick_lbl)
             sub_row.addStretch()
             info.addLayout(sub_row)
 
-            # Category tags
             cats = self.data["category_map"].get(proj, [])
             if cats:
                 tags_row = QHBoxLayout()
@@ -2791,7 +3028,7 @@ class TimeTrackerApp(QMainWindow):
                     bg_color = tag_palette[idx % len(tag_palette)]
                     tag = QLabel(cat)
                     tag.setStyleSheet(
-                        f"background-color: {bg_color}; color: #ffffff; "
+                        f"background-color: {bg_color}55; color: {TEXT_DIM}; "
                         f"font-size: 8px; font-weight: bold; padding: 1px 6px; "
                         f"border-radius: 3px; border: none;"
                     )
@@ -2800,7 +3037,6 @@ class TimeTrackerApp(QMainWindow):
                 info.addLayout(tags_row)
             rl.addLayout(info, 1)
 
-            # Right: action buttons
             btns = QHBoxLayout()
             btns.setSpacing(3)
 
@@ -2818,29 +3054,18 @@ class TimeTrackerApp(QMainWindow):
                 b.setFixedHeight(26)
                 return b
 
-            sel = _small_btn("▶", GREEN, GREEN_H, "#0a0a0a")
-            sel.clicked.connect(lambda checked=False, p=proj: self.select_project(p))
-            btns.addWidget(sel)
-
-            add_e = _small_btn("⊕", PURPLE, PURPLE_H)
-            add_e.clicked.connect(lambda checked=False, p=proj: self.add_manual_entry(p))
-            btns.addWidget(add_e)
-
-            if ticket:
-                info_b = _small_btn("ℹ", BLUE, BLUE_H)
-                info_b.clicked.connect(lambda checked=False, p=proj, t=ticket: self.open_jira_info(p, t))
-                btns.addWidget(info_b)
-
-            edit_b = _small_btn("✎", JIRA_BLUE, "#0065ff")
-            edit_b.clicked.connect(lambda checked=False, p=proj: self.edit_project(p))
-            btns.addWidget(edit_b)
+            restore_b = _small_btn("↩ Restore", GREEN, GREEN_H, "#0a0a0a")
+            restore_b.setToolTip("Move back to active projects")
+            restore_b.clicked.connect(lambda checked=False, p=proj: self.restore_project(p))
+            btns.addWidget(restore_b)
 
             del_b = _small_btn("✕", RED, RED_H)
-            del_b.clicked.connect(lambda checked=False, p=proj: self.delete_project(p))
+            del_b.setToolTip("Permanently delete this project and all its sessions")
+            del_b.clicked.connect(lambda checked=False, p=proj: self.delete_project(p, archived=True))
             btns.addWidget(del_b)
 
             rl.addLayout(btns)
-            self.proj_layout.insertWidget(i, row)
+            self.archived_proj_layout.insertWidget(i, row)
 
     def add_project(self):
         dlg = ProjectDialog(self,
@@ -2911,15 +3136,48 @@ class TimeTrackerApp(QMainWindow):
         self.refresh_log()
         self._update_ticket_label()
 
-    def delete_project(self, name):
+    def archive_project(self, name):
+        """Move a project from active to the archive."""
         if self._timer_running and self._active_project == name:
+            QMessageBox.warning(self, "Active", "Stop the timer before archiving.")
+            return
+        self.data["projects"].remove(name)
+        self.data.setdefault("archived_projects", [])
+        if name not in self.data["archived_projects"]:
+            self.data["archived_projects"].append(name)
+        save_data(self.data)
+        if self._active_project == name:
+            self._active_project = ""
+            self.project_lbl.setText("No project selected")
+            self.ticket_lbl.setText("")
+        self.refresh_projects()
+        self.refresh_log()
+
+    def restore_project(self, name):
+        """Move a project from the archive back to active."""
+        archived = self.data.get("archived_projects", [])
+        if name in archived:
+            archived.remove(name)
+        if name not in self.data["projects"]:
+            self.data["projects"].append(name)
+        save_data(self.data)
+        self.refresh_projects()
+        self.refresh_log()
+
+    def delete_project(self, name, archived=False):
+        if not archived and self._timer_running and self._active_project == name:
             QMessageBox.warning(self, "Active", "Stop the timer before deleting.")
             return
         if QMessageBox.question(self, "Delete",
-                f'Delete "{name}" and all its sessions?',
+                f'Permanently delete "{name}" and all its sessions?\n'
+                f'This cannot be undone.',
                 QMessageBox.Yes | QMessageBox.No) != QMessageBox.Yes:
             return
-        self.data["projects"].remove(name)
+        if archived:
+            self.data.get("archived_projects", []).remove(name) if name in self.data.get("archived_projects", []) else None
+        else:
+            if name in self.data["projects"]:
+                self.data["projects"].remove(name)
         self.data["sessions"]    = [s for s in self.data["sessions"] if s["project"] != name]
         self.data["ticket_map"].pop(name, None)
         self.data["category_map"].pop(name, None)
@@ -2931,6 +3189,64 @@ class TimeTrackerApp(QMainWindow):
         self.refresh_projects()
         self.refresh_log()
         self.refresh_stats()
+
+    def _run_jira_auto_archive(self):
+        """Start a background Jira status check; auto-archives done/closed projects."""
+        j = self.data.get("jira", {})
+        if not (j.get("url") and j.get("email") and j.get("token")):
+            return  # Jira not configured — silent skip
+
+        # Only check projects that have tickets and are not already archived
+        ticket_map = {
+            p: self.data["ticket_map"][p]
+            for p in self.data["projects"]
+            if self.data["ticket_map"].get(p)
+        }
+        if not ticket_map:
+            return
+
+        # Disable button while running
+        if hasattr(self, "_jira_check_btn"):
+            self._jira_check_btn.setEnabled(False)
+            self._jira_check_btn.setText("⟳ Checking…")
+
+        self._archive_worker = JiraAutoArchiveWorker(j, ticket_map)
+        self._archive_worker.done.connect(self._on_auto_archive_done)
+        self._archive_worker.start()
+
+    def _on_auto_archive_done(self, to_archive, error_msg):
+        """Called when the Jira status check finishes."""
+        if hasattr(self, "_jira_check_btn"):
+            self._jira_check_btn.setEnabled(True)
+            self._jira_check_btn.setText("⟳ Jira")
+
+        if to_archive:
+            names = "\n".join(f"  • {p}" for p in to_archive)
+            reply = QMessageBox.question(
+                self, "Auto-Archive Projects",
+                f"The following projects have a completed Jira ticket\n"
+                f"(Done / Closed / Resolved) and can be archived:\n\n"
+                f"{names}\n\n"
+                f"Archive them now?",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if reply == QMessageBox.Yes:
+                for name in to_archive:
+                    if name in self.data["projects"]:
+                        self.data["projects"].remove(name)
+                        self.data.setdefault("archived_projects", [])
+                        if name not in self.data["archived_projects"]:
+                            self.data["archived_projects"].append(name)
+                save_data(self.data)
+                self.refresh_projects()
+                self.refresh_log()
+                # Switch to the archived tab so user sees the result
+                self._switch_proj_tab("archived")
+
+        if error_msg:
+            # Non-blocking: just update the Jira status label
+            existing = self.jira_status_lbl.text()
+            self.jira_status_lbl.setToolTip(f"Errors during status check:\n{error_msg}")
 
     def select_project(self, name):
         if self._timer_running:
