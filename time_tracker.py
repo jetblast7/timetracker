@@ -1194,12 +1194,37 @@ class ExportDialog(QDialog):
         proj_inner = QWidget(); proj_inner.setStyleSheet("background: transparent;")
         proj_vb = QVBoxLayout(proj_inner); proj_vb.setSpacing(4); proj_vb.setContentsMargins(4,4,4,4)
         self._proj_checks = []
-        for proj in data.get("projects", []):
+
+        active_projects   = data.get("projects", [])
+        archived_projects = data.get("archived_projects", [])
+
+        for proj in active_projects:
             cb = QCheckBox(proj)
             cb.setChecked(True)
             cb.stateChanged.connect(self._update_preview)
             proj_vb.addWidget(cb)
             self._proj_checks.append(cb)
+
+        # Archived projects — shown with a dim separator and 📦 prefix label
+        if archived_projects:
+            # Only show the separator if there are also active projects
+            if active_projects:
+                sep_lbl = QLabel("── Archived ──────────────")
+                sep_lbl.setStyleSheet(
+                    f"color: {TEXT_DIM}; font-size: 8px; font-weight: bold; "
+                    "background: transparent; margin-top: 4px;"
+                )
+                proj_vb.addWidget(sep_lbl)
+
+            for proj in archived_projects:
+                cb = QCheckBox(f"📦 {proj}")
+                cb.setProperty("actual_name", proj)   # store real name for filtering
+                cb.setChecked(True)
+                cb.setStyleSheet(f"color: {TEXT_DIM};")
+                cb.stateChanged.connect(self._update_preview)
+                proj_vb.addWidget(cb)
+                self._proj_checks.append(cb)
+
         if not self._proj_checks:
             proj_vb.addWidget(dim_label("No projects yet."))
         proj_vb.addStretch()
@@ -1390,7 +1415,13 @@ class ExportDialog(QDialog):
         self._update_preview()
 
     def _get_selected_projects(self):
-        return {cb.text() for cb in self._proj_checks if cb.isChecked()}
+        selected = set()
+        for cb in self._proj_checks:
+            if cb.isChecked():
+                # archived checkboxes store the real name in actual_name property
+                actual = cb.property("actual_name")
+                selected.add(actual if actual else cb.text())
+        return selected
 
     def _compute_date_range(self):
         """Returns (start_str, end_str) or (None, None) for all time."""
