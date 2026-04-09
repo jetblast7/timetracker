@@ -1746,6 +1746,21 @@ class SettingsDialog(QDialog):
         help_lbl.setOpenExternalLinks(True)
         help_lbl.setStyleSheet("font-size: 11px; background: transparent;")
         jc_lay.addWidget(help_lbl)
+
+        # Test connection row
+        test_row = QHBoxLayout()
+        self._test_btn = styled_btn("⚡ Test Connection", CARD, SURFACE, TEXT_DIM,
+                                    font_size=10, bold=False)
+        self._test_btn.setToolTip("Verify credentials can connect to your Jira instance")
+        self._test_btn.clicked.connect(self._test_connection)
+        self._test_lbl = QLabel("")
+        self._test_lbl.setStyleSheet(f"font-size: 11px; background: transparent;")
+        self._test_worker = None
+        test_row.addWidget(self._test_btn)
+        test_row.addSpacing(10)
+        test_row.addWidget(self._test_lbl, 1)
+        jc_lay.addLayout(test_row)
+
         lay.addWidget(jira_card)
 
         # ── Buttons ───────────────────────────────────────────────────────────
@@ -1799,6 +1814,38 @@ class SettingsDialog(QDialog):
         self._refresh_theme_btns()
         # Live preview — emit immediately
         self.theme_changed.emit(key)
+
+    def _current_jira_cfg(self):
+        return {
+            "url":   self._jira_url.text().strip(),
+            "email": self._jira_email.text().strip(),
+            "token": self._jira_token.text().strip(),
+        }
+
+    def _test_connection(self):
+        cfg = self._current_jira_cfg()
+        if not cfg["url"] or not cfg["email"] or not cfg["token"]:
+            self._show_test_result(False, "Fill in all three Jira fields first.")
+            return
+        self._test_btn.setEnabled(False)
+        self._test_btn.setText("⟳ Testing…")
+        self._test_lbl.setText("")
+        self._test_worker = JiraTestWorker(cfg)
+        self._test_worker.done.connect(self._on_test_done)
+        self._test_worker.start()
+
+    def _on_test_done(self, ok, message):
+        self._test_btn.setEnabled(True)
+        self._test_btn.setText("⚡ Test Connection")
+        self._show_test_result(ok, message)
+
+    def _show_test_result(self, ok, message):
+        color  = SUCCESS if ok else "#e94560"
+        prefix = "✔  " if ok else "✖  "
+        self._test_lbl.setText(prefix + message)
+        self._test_lbl.setStyleSheet(
+            f"color: {color}; font-size: 11px; background: transparent;"
+        )
 
     def _save(self):
         self._data.setdefault("settings", {})["theme"] = self._pending_theme
